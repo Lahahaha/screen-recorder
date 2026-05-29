@@ -2,9 +2,8 @@ name: Build
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    tags:
+      - 'v*'
 
 jobs:
   build-macos:
@@ -29,11 +28,15 @@ jobs:
           curl -L "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64" -o ScreenRecorder.app/Contents/Resources/ffmpeg
           chmod +x ScreenRecorder.app/Contents/Resources/ffmpeg
       
+      - name: Package
+        run: |
+          zip -r ScreenRecorder-macos-arm64.zip ScreenRecorder.app
+      
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ScreenRecorder-macos
-          path: ScreenRecorder.app
+          path: ScreenRecorder-macos-arm64.zip
 
   build-windows:
     runs-on: windows-latest
@@ -72,10 +75,31 @@ jobs:
           
           # 创建自解压包
           $sfxModule = "C:\Program Files\7-Zip\7z.sfx"
-          cat $sfxModule, config.txt, ScreenRecorder.7z -Encoding Byte | Set-Content ScreenRecorder.exe -Encoding Byte
+          cat $sfxModule, config.txt, ScreenRecorder.7z -Encoding Byte | Set-Content ScreenRecorder-windows-x64.exe -Encoding Byte
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ScreenRecorder-windows
-          path: ScreenRecorder.exe
+          path: ScreenRecorder-windows-x64.exe
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/ScreenRecorder-macos/ScreenRecorder-macos-arm64.zip
+            artifacts/ScreenRecorder-windows/ScreenRecorder-windows-x64.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
