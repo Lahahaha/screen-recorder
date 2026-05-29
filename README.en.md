@@ -8,7 +8,7 @@ A lightweight screen recording tool that automatically captures screenshots and 
 
 - 🖥️ **System Tray** - Runs quietly in the menu bar/system tray
 - ⏱️ **Auto Capture** - Timed screenshots (10s/30s/60s/120s intervals)
-- 🎬 **Video Generation** - Creates H.265 time-lapse videos
+- 🎬 **Video Generation** - Creates H.264 time-lapse videos
 - 🔔 **Notifications** - macOS system notifications for video status
 - 📁 **Auto Organization** - Screenshots organized by date
 - 🖥️ **Cross Platform** - macOS and Windows support
