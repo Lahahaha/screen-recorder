@@ -56,32 +56,15 @@ jobs:
           cp target/release/screen-recorder.exe ScreenRecorder/
           cp ffmpeg-extract/*/bin/ffmpeg.exe ScreenRecorder/
       
-      - name: Create self-extracting archive
+      - name: Package
         run: |
-          # 下载 7-Zip
-          Invoke-WebRequest -Uri "https://www.7-zip.org/a/7z2301-x64.exe" -OutFile 7z-installer.exe
-          Start-Process -FilePath .\7z-installer.exe -ArgumentList "/S" -Wait
-          
-          # 创建 7z 压缩包
-          & "C:\Program Files\7-Zip\7z.exe" a -t7z ScreenRecorder.7z .\ScreenRecorder\*
-          
-          # 创建自解压配置
-          @"
-          ;!@Install@!UTF-8!
-          Title="Screen Recorder"
-          RunProgram="ScreenRecorder\screen-recorder.exe"
-          ;!@InstallEnd@!
-          "@ | Out-File -Encoding UTF8 config.txt
-          
-          # 创建自解压包
-          $sfxModule = "C:\Program Files\7-Zip\7z.sfx"
-          cat $sfxModule, config.txt, ScreenRecorder.7z -Encoding Byte | Set-Content ScreenRecorder-windows-x64.exe -Encoding Byte
+          Compress-Archive -Path ScreenRecorder\* -DestinationPath ScreenRecorder-windows-x64.zip
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ScreenRecorder-windows
-          path: ScreenRecorder-windows-x64.exe
+          path: ScreenRecorder-windows-x64.zip
 
   release:
     needs: [build-macos, build-windows]
@@ -99,7 +82,7 @@ jobs:
         with:
           files: |
             artifacts/ScreenRecorder-macos/ScreenRecorder-macos-arm64.zip
-            artifacts/ScreenRecorder-windows/ScreenRecorder-windows-x64.exe
+            artifacts/ScreenRecorder-windows/ScreenRecorder-windows-x64.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
