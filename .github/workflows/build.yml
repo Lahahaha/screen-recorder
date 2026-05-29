@@ -49,12 +49,33 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extract
-          mkdir release
-          cp target/release/screen-recorder.exe release/
-          cp ffmpeg-extract/*/bin/ffmpeg.exe release/
+          mkdir ScreenRecorder
+          cp target/release/screen-recorder.exe ScreenRecorder/
+          cp ffmpeg-extract/*/bin/ffmpeg.exe ScreenRecorder/
+      
+      - name: Create self-extracting archive
+        run: |
+          # 下载 7-Zip
+          Invoke-WebRequest -Uri "https://www.7-zip.org/a/7z2301-x64.exe" -OutFile 7z-installer.exe
+          Start-Process -FilePath .\7z-installer.exe -ArgumentList "/S" -Wait
+          
+          # 创建 7z 压缩包
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z ScreenRecorder.7z .\ScreenRecorder\*
+          
+          # 创建自解压配置
+          @"
+          ;!@Install@!UTF-8!
+          Title="Screen Recorder"
+          RunProgram="ScreenRecorder\screen-recorder.exe"
+          ;!@InstallEnd@!
+          "@ | Out-File -Encoding UTF8 config.txt
+          
+          # 创建自解压包
+          $sfxModule = "C:\Program Files\7-Zip\7z.sfx"
+          cat $sfxModule, config.txt, ScreenRecorder.7z -Encoding Byte | Set-Content ScreenRecorder.exe -Encoding Byte
       
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ScreenRecorder-windows
-          path: release/
+          path: ScreenRecorder.exe
