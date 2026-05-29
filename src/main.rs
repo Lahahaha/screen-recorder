@@ -178,10 +178,8 @@ fn main() -> AppResult<()> {
 
 impl AppPaths {
     fn new() -> AppResult<Self> {
-        let movies_dir = dirs::video_dir()
-            .or_else(|| dirs::home_dir().map(|home| home.join("Movies")))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "无法定位 Movies 目录"))?;
-        let root = movies_dir.join("ScreenRecorder");
+        // 按优先级查找可用的视频目录
+        let root = Self::find_data_dir()?;
         let screenshots = root.join("screenshots");
         let videos = root.join("videos");
         let config = root.join("config.json");
@@ -195,6 +193,41 @@ impl AppPaths {
             screenshots,
             videos,
         })
+    }
+
+    fn find_data_dir() -> AppResult<PathBuf> {
+        // 1. 优先使用系统视频目录
+        if let Some(video_dir) = dirs::video_dir() {
+            let root = video_dir.join("ScreenRecorder");
+            if Self::ensure_dir(&root).is_ok() {
+                return Ok(root);
+            }
+        }
+
+        // 2. 使用文档目录（macOS/Windows 都存在）
+        if let Some(doc_dir) = dirs::document_dir() {
+            let root = doc_dir.join("ScreenRecorder");
+            if Self::ensure_dir(&root).is_ok() {
+                return Ok(root);
+            }
+        }
+
+        // 3. 使用用户主目录
+        if let Some(home_dir) = dirs::home_dir() {
+            let root = home_dir.join("ScreenRecorder");
+            if Self::ensure_dir(&root).is_ok() {
+                return Ok(root);
+            }
+        }
+
+        Err(io::Error::new(io::ErrorKind::NotFound, "无法找到可用的数据存储目录").into())
+    }
+
+    fn ensure_dir(path: &Path) -> AppResult<()> {
+        if !path.exists() {
+            fs::create_dir_all(path)?;
+        }
+        Ok(())
     }
 
     fn screenshots_dir_for_date(&self, date: &str) -> PathBuf {
