@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use chrono::Local;
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use screenshots::Screen;
