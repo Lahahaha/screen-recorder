@@ -4,7 +4,7 @@
 # macOS
 .DS_Store
 
-# App bundle (构建产物，不提交)
+# App bundle (本地构建产物)
 ScreenRecorder.app/
 
 # 临时文件

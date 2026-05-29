@@ -1,0 +1,60 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+      
+      - name: Build
+        run: cargo build --release
+      
+      - name: Create app bundle
+        run: |
+          mkdir -p ScreenRecorder.app/Contents/MacOS
+          mkdir -p ScreenRecorder.app/Contents/Resources
+          cp target/release/screen-recorder ScreenRecorder.app/Contents/MacOS/
+          cp Info.plist ScreenRecorder.app/Contents/
+      
+      - name: Download ffmpeg
+        run: |
+          curl -L "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64" -o ScreenRecorder.app/Contents/Resources/ffmpeg
+          chmod +x ScreenRecorder.app/Contents/Resources/ffmpeg
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenRecorder-macos
+          path: ScreenRecorder.app
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: dtolnay/rust-toolchain@stable
+      
+      - name: Build
+        run: cargo build --release
+      
+      - name: Download ffmpeg
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extract
+          mkdir release
+          cp target/release/screen-recorder.exe release/
+          cp ffmpeg-extract/*/bin/ffmpeg.exe release/
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ScreenRecorder-windows
+          path: release/
