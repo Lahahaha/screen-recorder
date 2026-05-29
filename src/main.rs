@@ -583,16 +583,33 @@ fn find_ffmpeg() -> AppResult<PathBuf> {
     let executable_dir = executable
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "无法定位当前可执行文件所在目录"))?;
-    let bundled = executable_dir.join("../Resources/ffmpeg");
 
+    // 1. 优先查找 exe 同目录的 ffmpeg（Windows 打包方式）
+    let same_dir = if cfg!(target_os = "windows") {
+        executable_dir.join("ffmpeg.exe")
+    } else {
+        executable_dir.join("ffmpeg")
+    };
+    if same_dir.is_file() {
+        return Ok(same_dir);
+    }
+
+    // 2. macOS: 查找 Resources 目录
+    let bundled = executable_dir.join("../Resources/ffmpeg");
     if bundled.is_file() {
         return Ok(bundled);
     }
 
-    find_in_path("ffmpeg").ok_or_else(|| {
+    // 3. 查找系统 PATH
+    let ffmpeg_name = if cfg!(target_os = "windows") {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+    find_in_path(ffmpeg_name).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
-            "找不到 ffmpeg，请将 ffmpeg 放入 app bundle 的 Resources 目录或安装到 PATH",
+            "找不到 ffmpeg，请将 ffmpeg 放入程序所在目录或安装到 PATH",
         )
         .into()
     })
@@ -667,13 +684,29 @@ fn create_tray_icon() -> AppResult<Icon> {
 }
 
 fn notify(title: &str, message: &str) {
-    let script = format!(
-        "display notification \"{}\" with title \"Screen Recorder\" subtitle \"{}\"",
-        message.replace('"', "\\\""),
-        title.replace('"', "\\\"")
-    );
-    if let Err(error) = Command::new("osascript").args(["-e", &script]).status() {
-        eprintln!("发送通知失败: {error}");
+    if cfg!(target_os = "windows") {
+        // Windows: 使用 PowerShell 消息框
+        let script = format!(
+            "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('{}', 'Screen Recorder - {}')",
+            message.replace('\'', "''"),
+            title.replace('\'', "''")
+        );
+        if let Err(error) = Command::new("powershell")
+            .args(["-Command", &script])
+            .status()
+        {
+            eprintln!("发送通知失败: {error}");
+        }
+    } else {
+        // macOS: 使用 osascript
+        let script = format!(
+            "display notification \"{}\" with title \"Screen Recorder\" subtitle \"{}\"",
+            message.replace('"', "\\\""),
+            title.replace('"', "\\\"")
+        );
+        if let Err(error) = Command::new("osascript").args(["-e", &script]).status() {
+            eprintln!("发送通知失败: {error}");
+        }
     }
 }
 
