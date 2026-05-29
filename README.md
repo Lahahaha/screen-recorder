@@ -1,63 +1,65 @@
 # Screen Recorder
 
-A lightweight screen recording tool that automatically captures screenshots and generates time-lapse videos. Built with Rust for minimal resource usage.
+[English](./README.en.md) | 中文
 
-## Features
+轻量级屏幕录制工具，自动定时截屏并生成延时视频。使用 Rust 构建，资源占用极低。
 
-- 🖥️ **System Tray** - Runs quietly in the menu bar
-- ⏱️ **Auto Capture** - Timed screenshots (10s/30s/60s/120s intervals)
-- 🎬 **Video Generation** - Creates H.265 time-lapse videos
-- 🔔 **Notifications** - macOS system notifications for video status
-- 📁 **Auto Organization** - Screenshots organized by date
-- 🖥️ **Cross Platform** - macOS and Windows support
+## 功能特性
 
-## Download
+- 🖥️ **系统托盘** - 安静运行在菜单栏/托盘区
+- ⏱️ **定时截屏** - 自动截屏（10s/30s/60s/120s 间隔）
+- 🎬 **视频生成** - 生成 H.265 延时视频
+- 🔔 **系统通知** - macOS 系统通知（成功/失败）
+- 📁 **自动整理** - 截图按日期自动分类
+- 🖥️ **跨平台** - 支持 macOS 和 Windows
 
-Download the latest version from [Releases](https://github.com/Lahahaha/screen-recorder/releases):
+## 下载
 
-| Platform | File | Size |
-|----------|------|------|
+从 [Releases](https://github.com/Lahahaha/screen-recorder/releases) 下载最新版本：
+
+| 平台 | 文件 | 大小 |
+|------|------|------|
 | macOS (Apple Silicon) | `ScreenRecorder-macos-arm64.zip` | ~50MB |
 | Windows (x64) | `ScreenRecorder-windows-x64.zip` | ~120MB |
 
-## Usage
+## 使用方法
 
 ### macOS
 
-1. Download and unzip `ScreenRecorder-macos-arm64.zip`
-2. Double-click `ScreenRecorder.app` to run
-3. Grant screen recording permission when prompted (System Settings → Privacy & Security → Screen Recording)
-4. Find the app icon in the menu bar
+1. 下载并解压 `ScreenRecorder-macos-arm64.zip`
+2. 双击 `ScreenRecorder.app` 运行
+3. 首次运行需授权屏幕录制权限（系统设置 → 隐私与安全性 → 屏幕录制）
+4. 在菜单栏找到应用图标
 
 ### Windows
 
-1. Download and unzip `ScreenRecorder-windows-x64.zip`
-2. Double-click `screen-recorder.exe` to run
-3. Find the app icon in the system tray
+1. 下载并解压 `ScreenRecorder-windows-x64.zip`
+2. 双击 `screen-recorder.exe` 运行
+3. 在系统托盘找到应用图标
 
-### Menu Options
+### 菜单选项
 
-| Option | Description |
-|--------|-------------|
-| 📷 Capture Now | Take an immediate screenshot |
-| ▶ Start | Start automatic timed capture |
-| ⏸ Pause | Pause automatic capture |
-| ⏱ Interval | Set capture interval (10s/30s/60s/120s) |
-| 🎬 Generate Video | Create today's time-lapse video |
-| ❌ Exit | Quit the application |
+| 选项 | 说明 |
+|------|------|
+| 📷 截一张 | 立即截取一张屏幕 |
+| ▶ 开始 | 启动定时自动截屏 |
+| ⏸ 暂停 | 暂停自动截屏 |
+| ⏱ 间隔 | 设置截屏间隔（10s/30s/60s/120s） |
+| 🎬 生成今日视频 | 生成今天的延时视频 |
+| ❌ 退出 | 退出程序 |
 
-### Storage Location
+### 存储位置
 
-Screenshots and videos are saved to:
+截图和视频保存在：
 
-| Platform | Path |
-|----------|------|
+| 平台 | 路径 |
+|------|------|
 | macOS | `~/Movies/ScreenRecorder/` |
-| Windows | `C:\Users\<username>\Videos\ScreenRecorder\` |
+| Windows | `C:\Users\<用户名>\Videos\ScreenRecorder\` |
 
 ```
 ScreenRecorder/
-├── config.json           # Configuration
+├── config.json           # 配置文件
 ├── screenshots/
 │   └── 2026-05-29/
 │       ├── 09-00-00.png
@@ -66,9 +68,9 @@ ScreenRecorder/
     └── 2026-05-29.mp4
 ```
 
-### Configuration
+### 配置文件
 
-Edit `config.json` to customize settings:
+编辑 `config.json` 自定义设置：
 
 ```json
 {
@@ -78,77 +80,77 @@ Edit `config.json` to customize settings:
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `interval` | 30 | Capture interval in seconds |
-| `fps` | 10 | Video frame rate |
-| `image_format` | "png" | Screenshot format (png/jpg) |
+| 设置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `interval` | 30 | 截屏间隔（秒） |
+| `fps` | 10 | 视频帧率 |
+| `image_format` | "png" | 截图格式（png/jpg） |
 
-## Build from Source
+## 从源码构建
 
-### Prerequisites
+### 前置要求
 
-- [Rust](https://rustup.rs/) (latest stable)
-- [FFmpeg](https://ffmpeg.org/) (for video generation)
+- [Rust](https://rustup.rs/)（最新稳定版）
+- [FFmpeg](https://ffmpeg.org/)（用于视频生成）
 
 ### macOS
 
 ```bash
-# Clone repository
+# 克隆仓库
 git clone https://github.com/Lahahaha/screen-recorder.git
 cd screen-recorder
 
-# Build
+# 构建
 cargo build --release
 
-# Create app bundle
+# 创建 app bundle
 mkdir -p ScreenRecorder.app/Contents/MacOS
 mkdir -p ScreenRecorder.app/Contents/Resources
 cp target/release/screen-recorder ScreenRecorder.app/Contents/MacOS/
 cp Info.plist ScreenRecorder.app/Contents/
 
-# Download ffmpeg
+# 下载 ffmpeg
 curl -L "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64" -o ScreenRecorder.app/Contents/Resources/ffmpeg
 chmod +x ScreenRecorder.app/Contents/Resources/ffmpeg
 
-# Run
+# 运行
 open ScreenRecorder.app
 ```
 
 ### Windows
 
 ```powershell
-# Clone repository
+# 克隆仓库
 git clone https://github.com/Lahahaha/screen-recorder.git
 cd screen-recorder
 
-# Build
+# 构建
 cargo build --release
 
-# Download ffmpeg
+# 下载 ffmpeg
 Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
 Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extract
 mkdir ScreenRecorder
 cp target/release/screen-recorder.exe ScreenRecorder/
 cp ffmpeg-extract/*/bin/ffmpeg.exe ScreenRecorder/
 
-# Run
+# 运行
 .\ScreenRecorder\screen-recorder.exe
 ```
 
-## Auto Release
+## 自动发布
 
-Pushing a tag automatically builds and releases:
+推送 tag 自动构建并发布：
 
 ```bash
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-## License
+## 开源协议
 
 [MIT License](LICENSE)
 
-## Contributing
+## 贡献
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+欢迎提交 Pull Request！
