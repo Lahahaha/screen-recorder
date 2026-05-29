@@ -402,12 +402,19 @@ fn capture_once_in_thread(paths: AppPaths, config: Arc<Mutex<Config>>) {
 
 fn generate_today_video_in_thread(paths: AppPaths, config: Arc<Mutex<Config>>) {
     thread::spawn(move || match cloned_config(&config) {
-        Ok(config) => {
-            if let Err(error) = generate_today_video(&paths, config.fps) {
-                eprintln!("生成今日视频失败: {error}");
+        Ok(config) => match generate_today_video(&paths, config.fps) {
+            Ok(output) => {
+                notify("视频生成成功", &format!("已保存到: {}", output.display()));
             }
+            Err(error) => {
+                eprintln!("生成今日视频失败: {error}");
+                notify("视频生成失败", &format!("{error}"));
+            }
+        },
+        Err(error) => {
+            eprintln!("读取配置失败: {error}");
+            notify("视频生成失败", &format!("读取配置失败: {error}"));
         }
-        Err(error) => eprintln!("读取配置失败: {error}"),
     });
 }
 
@@ -624,6 +631,17 @@ fn create_tray_icon() -> AppResult<Icon> {
     }
 
     Ok(Icon::from_rgba(rgba, SIZE, SIZE)?)
+}
+
+fn notify(title: &str, message: &str) {
+    let script = format!(
+        "display notification \"{}\" with title \"Screen Recorder\" subtitle \"{}\"",
+        message.replace('"', "\\\""),
+        title.replace('"', "\\\"")
+    );
+    if let Err(error) = Command::new("osascript").args(["-e", &script]).status() {
+        eprintln!("发送通知失败: {error}");
+    }
 }
 
 fn put_pixel(rgba: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4]) {
