@@ -555,14 +555,31 @@ fn generate_today_video(paths: &AppPaths, fps: u32) -> AppResult<PathBuf> {
     let output = paths.video_path_for_date(&today);
     let fps_value = fps.max(1).to_string();
     let ffmpeg = find_ffmpeg()?;
-    let status = Command::new(&ffmpeg)
-        .args(["-y", "-f", "concat", "-safe", "0", "-r", &fps_value, "-i"])
+    let mut cmd = Command::new(&ffmpeg);
+    cmd.args(["-y", "-f", "concat", "-safe", "0", "-r", &fps_value, "-i"])
         .arg(&filelist)
         .args([
-            "-c:v", "libx265", "-tag:v", "hvc1", "-pix_fmt", "yuv420p", "-r", &fps_value,
+            "-c:v",
+            "libx265",
+            "-tag:v",
+            "hvc1",
+            "-pix_fmt",
+            "yuv420p",
+            "-vf",
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            "-r",
+            &fps_value,
         ])
-        .arg(&output)
-        .status();
+        .arg(&output);
+
+    // Windows: 隐藏命令行窗口
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let status = cmd.status();
 
     let cleanup_result = fs::remove_file(&filelist);
     if let Err(error) = cleanup_result {
@@ -693,10 +710,15 @@ fn notify(title: &str, message: &str) {
             message.replace('\'', "''"),
             title.replace('\'', "''")
         );
-        if let Err(error) = Command::new("powershell")
-            .args(["-Command", &script])
-            .status()
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-Command", &script]);
+        // 隐藏 PowerShell 窗口
+        #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        if let Err(error) = cmd.status() {
             eprintln!("发送通知失败: {error}");
         }
     } else {
