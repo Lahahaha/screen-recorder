@@ -17,6 +17,7 @@ trait Platform {
     fn replace_file(source: &Path, destination: &Path) -> crate::app::AppResult<()>;
     fn find_ffmpeg() -> crate::app::AppResult<PathBuf>;
     fn notify(title: &str, message: &str, logger: Logger);
+    fn open_path(path: &Path) -> crate::app::AppResult<()>;
     fn hide_console(cmd: &mut Command);
 }
 
@@ -40,6 +41,10 @@ impl Platform for CurrentPlatform {
         macos::notify(title, message, logger);
     }
 
+    fn open_path(path: &Path) -> crate::app::AppResult<()> {
+        macos::open_path(path)
+    }
+
     fn hide_console(_cmd: &mut Command) {}
 }
 
@@ -57,6 +62,10 @@ impl Platform for CurrentPlatform {
         windows::notify(title, message, logger);
     }
 
+    fn open_path(path: &Path) -> crate::app::AppResult<()> {
+        windows::open_path(path)
+    }
+
     fn hide_console(cmd: &mut Command) {
         windows::hide_console(cmd);
     }
@@ -72,6 +81,10 @@ pub(crate) fn find_ffmpeg() -> crate::app::AppResult<PathBuf> {
 
 pub(crate) fn notify(title: &str, message: &str, logger: Logger) {
     CurrentPlatform::notify(title, message, logger);
+}
+
+pub(crate) fn open_path(path: &Path) -> crate::app::AppResult<()> {
+    CurrentPlatform::open_path(path)
 }
 
 pub(crate) fn hide_console(cmd: &mut Command) {

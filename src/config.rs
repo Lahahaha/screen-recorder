@@ -208,3 +208,98 @@ pub(crate) fn cloned_config(config: &Arc<Mutex<Config>>) -> AppResult<Config> {
         .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(config.clone())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_logger() -> Logger {
+        let root = std::env::temp_dir().join(format!(
+            "screen-recorder-test-{}-{}",
+            std::process::id(),
+            Local::now().format("%Y%m%d%H%M%S%.3f")
+        ));
+        let paths = AppPaths {
+            config: root.join("config.json"),
+            screenshots: root.join("screenshots"),
+            videos: root.join("videos"),
+            root,
+        };
+        Logger::new(&paths).expect("create test logger")
+    }
+
+    #[test]
+    fn default_config_is_conservative() {
+        let config = Config::default();
+
+        assert_eq!(config.interval, 30);
+        assert_eq!(config.fps, 10);
+        assert_eq!(config.image_format, ScreenshotFormat::Png);
+        assert_eq!(config.scale, 1.0);
+        assert!(!config.dedup);
+        assert!(!config.auto_start);
+        assert_eq!(config.video_codec, VideoCodec::H264);
+    }
+
+    #[test]
+    fn screenshot_format_parses_known_values() {
+        assert_eq!(ScreenshotFormat::from_config("jpg"), ScreenshotFormat::Jpg);
+        assert_eq!(ScreenshotFormat::from_config("JPEG"), ScreenshotFormat::Jpg);
+        assert_eq!(ScreenshotFormat::from_config("png"), ScreenshotFormat::Png);
+        assert_eq!(
+            ScreenshotFormat::from_config("unknown"),
+            ScreenshotFormat::Png
+        );
+    }
+
+    #[test]
+    fn video_codec_parses_known_values() {
+        assert_eq!(VideoCodec::from_config("h265"), VideoCodec::H265);
+        assert_eq!(VideoCodec::from_config("hevc"), VideoCodec::H265);
+        assert_eq!(VideoCodec::from_config("libx265"), VideoCodec::H265);
+        assert_eq!(VideoCodec::from_config("h264"), VideoCodec::H264);
+        assert_eq!(VideoCodec::from_config("unknown"), VideoCodec::H264);
+    }
+
+    #[test]
+    fn normalize_config_resets_invalid_values() {
+        let logger = test_logger();
+        let mut config = Config {
+            interval: 999,
+            fps: 0,
+            scale: -1.0,
+            ..Config::default()
+        };
+
+        normalize_config(&mut config, &logger);
+
+        assert_eq!(config.interval, Config::default().interval);
+        assert_eq!(config.fps, Config::default().fps);
+        assert_eq!(config.scale, Config::default().scale);
+    }
+
+    #[test]
+    fn normalize_config_caps_large_scale() {
+        let logger = test_logger();
+        let mut config = Config {
+            scale: 99.0,
+            ..Config::default()
+        };
+
+        normalize_config(&mut config, &logger);
+
+        assert_eq!(config.scale, MAX_SCALE);
+    }
+
+    #[test]
+    fn cloned_config_returns_snapshot() {
+        let config = Arc::new(Mutex::new(Config {
+            interval: 10,
+            ..Config::default()
+        }));
+
+        let cloned = cloned_config(&config).expect("clone config");
+
+        assert_eq!(cloned.interval, 10);
+    }
+}

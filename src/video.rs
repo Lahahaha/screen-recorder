@@ -63,9 +63,17 @@ pub(crate) fn generate_today_video(
     cmd.arg(&temp_output);
     platform::hide_console(&mut cmd);
 
-    let status = cmd.status()?;
-    if !status.success() {
-        return Err(io::Error::other(format!("ffmpeg 退出码: {status}")).into());
+    let command = format!("{cmd:?}");
+    let output_result = cmd.output()?;
+    if !output_result.status.success() {
+        let details = ffmpeg_failure_details(
+            &command,
+            output_result.status.to_string(),
+            &output_result.stdout,
+            &output_result.stderr,
+        );
+        logger.error(format!("ffmpeg 执行失败: {details}"));
+        return Err(io::Error::other(details).into());
     }
 
     platform::replace_file(&temp_output, &output)?;
@@ -85,6 +93,36 @@ fn choose_video_images(
     }
 
     Ok((images, image_format))
+}
+
+fn ffmpeg_failure_details(command: &str, status: String, stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout = summarize_process_output(stdout);
+    let stderr = summarize_process_output(stderr);
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => format!("命令: {command}; 退出码: {status}; 无 stdout/stderr"),
+        (true, false) => format!("命令: {command}; 退出码: {status}; stderr: {stderr}"),
+        (false, true) => format!("命令: {command}; 退出码: {status}; stdout: {stdout}"),
+        (false, false) => {
+            format!("命令: {command}; 退出码: {status}; stderr: {stderr}; stdout: {stdout}")
+        }
+    }
+}
+
+fn summarize_process_output(output: &[u8]) -> String {
+    const MAX_LEN: usize = 4000;
+    let text = String::from_utf8_lossy(output).trim().to_string();
+    if text.len() <= MAX_LEN {
+        return text;
+    }
+
+    let mut summary = text
+        .char_indices()
+        .take_while(|(index, _)| *index < MAX_LEN)
+        .map(|(_, ch)| ch)
+        .collect::<String>();
+    summary.push_str("...<truncated>");
+    summary
 }
 
 fn prepare_frame_sequence(
@@ -111,4 +149,59 @@ fn prepare_frame_sequence(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn choose_video_images_keeps_supported_images_sorted() {
+        let images = vec![
+            PathBuf::from("z.txt"),
+            PathBuf::from("10-00-30.jpg"),
+            PathBuf::from("10-00-00.png"),
+        ];
+
+        let (images, format) =
+            choose_video_images(images, ScreenshotFormat::Jpg).expect("choose images");
+
+        assert_eq!(
+            images,
+            vec![PathBuf::from("10-00-00.png"), PathBuf::from("10-00-30.jpg")]
+        );
+        assert_eq!(format, ScreenshotFormat::Jpg);
+    }
+
+    #[test]
+    fn choose_video_images_rejects_empty_supported_set() {
+        let error = choose_video_images(vec![PathBuf::from("notes.txt")], ScreenshotFormat::Png)
+            .expect_err("reject empty set");
+
+        assert!(error.to_string().contains("今天还没有可用截图"));
+    }
+
+    #[test]
+    fn ffmpeg_failure_details_prefers_stderr() {
+        let details = ffmpeg_failure_details(
+            "\"ffmpeg\" \"-i\" \"input\"",
+            "exit status: 1".to_string(),
+            b"",
+            b"bad input",
+        );
+
+        assert!(details.contains("命令: \"ffmpeg\" \"-i\" \"input\""));
+        assert!(details.contains("退出码: exit status: 1"));
+        assert!(details.contains("stderr: bad input"));
+    }
+
+    #[test]
+    fn summarize_process_output_truncates_long_text() {
+        let long_output = "a".repeat(4100);
+
+        let summary = summarize_process_output(long_output.as_bytes());
+
+        assert!(summary.ends_with("...<truncated>"));
+        assert!(summary.len() < long_output.len());
+    }
 }

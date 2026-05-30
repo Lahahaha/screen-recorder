@@ -20,11 +20,12 @@ pub(crate) struct TrayControls {
     interval_menu: Submenu,
     interval_items: Vec<(u64, CheckMenuItem)>,
     generate_video: MenuItem,
+    open_output_dir: MenuItem,
     quit: MenuItem,
 }
 
 pub(crate) struct TrayState {
-    _tray_icon: TrayIcon,
+    tray_icon: TrayIcon,
     pub(crate) controls: TrayControls,
 }
 
@@ -34,6 +35,7 @@ pub(crate) enum AppCommand {
     ToggleRunning,
     SetInterval(u64),
     GenerateTodayVideo,
+    OpenOutputDir,
     Quit,
 }
 
@@ -55,7 +57,7 @@ pub(crate) fn create_tray_state(
     tray_icon.set_icon_as_template(true);
 
     Ok(TrayState {
-        _tray_icon: tray_icon,
+        tray_icon,
         controls,
     })
 }
@@ -66,6 +68,7 @@ fn build_menu(current_interval: u64) -> AppResult<TrayControls> {
     let start_pause = MenuItem::new("▶ 开始", true, None);
     let interval_menu = Submenu::new(format!("⏱ 间隔 当前：{current_interval}s"), true);
     let generate_video = MenuItem::new("🎬 生成今日视频", true, None);
+    let open_output_dir = MenuItem::new("📁 打开保存目录", true, None);
     let quit = MenuItem::new("❌ 退出", true, None);
 
     let interval_items = SUPPORTED_INTERVALS
@@ -97,6 +100,7 @@ fn build_menu(current_interval: u64) -> AppResult<TrayControls> {
         &interval_menu,
         &PredefinedMenuItem::separator(),
         &generate_video,
+        &open_output_dir,
         &PredefinedMenuItem::separator(),
         &quit,
     ])?;
@@ -108,6 +112,7 @@ fn build_menu(current_interval: u64) -> AppResult<TrayControls> {
         interval_menu,
         interval_items,
         generate_video,
+        open_output_dir,
         quit,
     })
 }
@@ -129,6 +134,10 @@ pub(crate) fn command_for_event(event: &MenuEvent, controls: &TrayControls) -> O
 
     if event.id == controls.generate_video.id() {
         return Some(AppCommand::GenerateTodayVideo);
+    }
+
+    if event.id == controls.open_output_dir.id() {
+        return Some(AppCommand::OpenOutputDir);
     }
 
     if event.id == controls.quit.id() {
@@ -154,6 +163,24 @@ pub(crate) fn update_interval_menu(controls: &TrayControls, seconds: u64) {
     for (value, item) in &controls.interval_items {
         item.set_checked(*value == seconds);
     }
+}
+
+pub(crate) fn update_tooltip(state: &TrayState, tooltip: &str) -> AppResult<()> {
+    state.tray_icon.set_tooltip(Some(tooltip))?;
+    Ok(())
+}
+
+pub(crate) fn status_tooltip(
+    is_running: bool,
+    interval: u64,
+    screenshot_count: u64,
+    last_capture: Option<&str>,
+) -> String {
+    let status = if is_running { "运行中" } else { "已暂停" };
+    let last_capture = last_capture.unwrap_or("暂无截图");
+    format!(
+        "{APP_NAME}\n状态: {status}\n间隔: {interval}s\n本次截图: {screenshot_count}\n最近: {last_capture}"
+    )
 }
 
 fn create_tray_icon() -> AppResult<Icon> {
@@ -191,4 +218,19 @@ fn create_tray_icon() -> AppResult<Icon> {
 fn put_pixel(rgba: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4]) {
     let index = ((y * width + x) * 4) as usize;
     rgba[index..index + 4].copy_from_slice(&color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_tooltip_includes_runtime_state() {
+        let tooltip = status_tooltip(true, 30, 2, Some("已保存 screen.png"));
+
+        assert!(tooltip.contains("状态: 运行中"));
+        assert!(tooltip.contains("间隔: 30s"));
+        assert!(tooltip.contains("本次截图: 2"));
+        assert!(tooltip.contains("最近: 已保存 screen.png"));
+    }
 }

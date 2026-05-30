@@ -80,6 +80,17 @@ pub(crate) fn notify(title: &str, message: &str, logger: Logger) {
     });
 }
 
+pub(crate) fn open_path(path: &Path) -> AppResult<()> {
+    let mut cmd = Command::new("explorer");
+    cmd.arg(path);
+    hide_console(&mut cmd);
+    let status = cmd.status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!("打开路径失败 {}: {status}", path.display())).into());
+    }
+    Ok(())
+}
+
 pub(crate) fn hide_console(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
     cmd.creation_flags(0x08000000);

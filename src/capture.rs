@@ -4,6 +4,7 @@ use crate::{
     logging::Logger,
     paths::AppPaths,
     platform,
+    temp::TempFileCleanup,
 };
 use chrono::Local;
 use image::{imageops::FilterType, DynamicImage, ImageFormat, RgbaImage};
@@ -12,7 +13,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fs,
     hash::{Hash, Hasher},
-    io,
+    io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -68,20 +69,63 @@ pub(crate) fn capture_once(
 
     let sequence = SCREENSHOT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     let output = output_dir.join(format!("{now}-{sequence:06}.{}", format.extension()));
-    match format {
-        ScreenshotFormat::Png => {
-            image.save_with_format(&output, ImageFormat::Png)?;
-        }
-        ScreenshotFormat::Jpg => {
-            image
-                .to_rgb8()
-                .save_with_format(&output, ImageFormat::Jpeg)?;
-        }
-    }
+    save_screenshot_atomic(&image, format, &output)?;
 
     store_screenshot_fingerprint(screenshot_hash, output.clone())?;
     logger.info(format!("已保存截图: {}", output.display()));
     Ok(output)
+}
+
+fn save_screenshot_atomic(
+    image: &DynamicImage,
+    format: ScreenshotFormat,
+    output: &Path,
+) -> AppResult<()> {
+    let parent = output.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("截图路径缺少父目录: {}", output.display()),
+        )
+    })?;
+    fs::create_dir_all(parent)?;
+
+    let file_name = output
+        .file_name()
+        .and_then(|file_name| file_name.to_str())
+        .unwrap_or("screenshot");
+    let temp_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        Local::now().format("%Y%m%d%H%M%S%.3f")
+    ));
+    let mut temp_cleanup = TempFileCleanup::new(temp_path.clone());
+    {
+        let file = fs::File::create(&temp_path)?;
+        let mut writer = BufWriter::new(file);
+        write_screenshot_image(image, format, &mut writer)?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+    }
+
+    platform::replace_file(&temp_path, output)?;
+    temp_cleanup.disarm();
+    Ok(())
+}
+
+fn write_screenshot_image<W: Write + std::io::Seek>(
+    image: &DynamicImage,
+    format: ScreenshotFormat,
+    writer: &mut W,
+) -> AppResult<()> {
+    match format {
+        ScreenshotFormat::Png => {
+            image.write_to(writer, ImageFormat::Png)?;
+        }
+        ScreenshotFormat::Jpg => {
+            DynamicImage::ImageRgb8(image.to_rgb8()).write_to(writer, ImageFormat::Jpeg)?;
+        }
+    }
+    Ok(())
 }
 
 fn prepare_screenshot_image(image: RgbaImage, scale: f32) -> DynamicImage {
@@ -139,4 +183,78 @@ pub(crate) fn screenshot_format_for_path(path: &Path) -> Option<ScreenshotFormat
             "jpg" | "jpeg" => Some(ScreenshotFormat::Jpg),
             _ => None,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Local;
+
+    fn test_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "screen-recorder-capture-test-{}-{}",
+            std::process::id(),
+            Local::now().format("%Y%m%d%H%M%S%.3f")
+        ));
+        fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    #[test]
+    fn screenshot_format_for_path_accepts_supported_extensions() {
+        assert_eq!(
+            screenshot_format_for_path(Path::new("screen.PNG")),
+            Some(ScreenshotFormat::Png)
+        );
+        assert_eq!(
+            screenshot_format_for_path(Path::new("screen.jpg")),
+            Some(ScreenshotFormat::Jpg)
+        );
+        assert_eq!(
+            screenshot_format_for_path(Path::new("screen.JPEG")),
+            Some(ScreenshotFormat::Jpg)
+        );
+    }
+
+    #[test]
+    fn screenshot_format_for_path_rejects_unknown_extensions() {
+        assert_eq!(screenshot_format_for_path(Path::new("screen.gif")), None);
+        assert_eq!(screenshot_format_for_path(Path::new("screen")), None);
+    }
+
+    #[test]
+    fn prepare_screenshot_image_scales_dimensions() {
+        let image = RgbaImage::new(10, 6);
+        let scaled = prepare_screenshot_image(image, 0.5);
+
+        assert_eq!(scaled.width(), 5);
+        assert_eq!(scaled.height(), 3);
+    }
+
+    #[test]
+    fn prepare_screenshot_image_keeps_minimum_one_pixel() {
+        let image = RgbaImage::new(1, 1);
+        let scaled = prepare_screenshot_image(image, 0.1);
+
+        assert_eq!(scaled.width(), 1);
+        assert_eq!(scaled.height(), 1);
+    }
+
+    #[test]
+    fn save_screenshot_atomic_writes_final_file() {
+        let dir = test_dir();
+        let output = dir.join("screen.png");
+        let image = DynamicImage::ImageRgba8(RgbaImage::new(2, 2));
+
+        save_screenshot_atomic(&image, ScreenshotFormat::Png, &output).expect("save screenshot");
+
+        assert!(output.exists());
+        assert!(fs::read_dir(&dir)
+            .expect("read test dir")
+            .all(|entry| !entry
+                .expect("read entry")
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")));
+    }
 }

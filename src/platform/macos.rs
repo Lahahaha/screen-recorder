@@ -35,6 +35,16 @@ pub(crate) fn notify(title: &str, message: &str, logger: Logger) {
     });
 }
 
+pub(crate) fn open_path(path: &Path) -> AppResult<()> {
+    let status = Command::new("open").arg(path).status()?;
+    if !status.success() {
+        return Err(
+            std::io::Error::other(format!("打开路径失败 {}: {status}", path.display())).into(),
+        );
+    }
+    Ok(())
+}
+
 fn escape_applescript_string(value: &str) -> String {
     value
         .replace('\\', "\\\\")

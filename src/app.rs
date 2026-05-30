@@ -10,6 +10,7 @@ use crate::{
 };
 use std::{
     error::Error,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -26,6 +27,11 @@ use winit::{
 };
 
 pub(crate) type AppResult<T> = Result<T, Box<dyn Error>>;
+
+enum AppEvent {
+    CaptureSucceeded { path: PathBuf, notify: bool },
+    CaptureFailed { message: String, notify: bool },
+}
 
 #[derive(Clone, Default)]
 struct ThreadRegistry {
@@ -66,6 +72,7 @@ struct AppState {
     running: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     generating_video: Arc<AtomicBool>,
+    app_events: mpsc::Sender<AppEvent>,
     workers: ThreadRegistry,
     logger: Logger,
 }
@@ -80,12 +87,14 @@ pub(crate) fn run() -> AppResult<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let generating_video = Arc::new(AtomicBool::new(false));
     let workers = ThreadRegistry::default();
+    let (app_event_tx, app_event_rx) = mpsc::channel::<AppEvent>();
 
     let mut capture_thread = Some(spawn_capture_loop(
         paths.clone(),
         Arc::clone(&running),
         Arc::clone(&shutdown),
         Arc::clone(&config),
+        app_event_tx.clone(),
         logger.clone(),
     ));
     let app_state = AppState {
@@ -94,6 +103,7 @@ pub(crate) fn run() -> AppResult<()> {
         running,
         shutdown,
         generating_video,
+        app_events: app_event_tx,
         workers,
         logger,
     };
@@ -111,6 +121,8 @@ pub(crate) fn run() -> AppResult<()> {
 
     let mut tray_state: Option<TrayState> = None;
     let mut saved_on_quit = false;
+    let mut screenshot_count = 0_u64;
+    let mut last_capture: Option<String> = None;
 
     #[allow(deprecated)]
     event_loop.run(move |event, event_loop| {
@@ -127,6 +139,14 @@ pub(crate) fn run() -> AppResult<()> {
                     ) {
                         Ok(state) => {
                             tray_state = Some(state);
+                            if let Some(state) = tray_state.as_ref() {
+                                update_tray_tooltip(
+                                    state,
+                                    &app_state,
+                                    screenshot_count,
+                                    last_capture.as_deref(),
+                                );
+                            }
                         }
                         Err(error) => {
                             app_state.logger.error(format!("创建系统托盘失败: {error}"));
@@ -138,6 +158,21 @@ pub(crate) fn run() -> AppResult<()> {
             }
             Event::AboutToWait => {
                 if let Some(state) = tray_state.as_ref() {
+                    for event in app_event_rx.try_iter() {
+                        handle_app_event(
+                            event,
+                            &mut screenshot_count,
+                            &mut last_capture,
+                            &app_state.logger,
+                        );
+                        update_tray_tooltip(
+                            state,
+                            &app_state,
+                            screenshot_count,
+                            last_capture.as_deref(),
+                        );
+                    }
+
                     for event in menu_rx.try_iter() {
                         if let Some(command) = tray::command_for_event(&event, &state.controls) {
                             handle_app_command(
@@ -146,6 +181,12 @@ pub(crate) fn run() -> AppResult<()> {
                                 &app_state,
                                 event_loop,
                                 &mut saved_on_quit,
+                            );
+                            update_tray_tooltip(
+                                state,
+                                &app_state,
+                                screenshot_count,
+                                last_capture.as_deref(),
                             );
                         }
                     }
@@ -184,6 +225,7 @@ fn handle_app_command(
         AppCommand::CaptureNow => capture_once_in_thread(
             state.paths.clone(),
             Arc::clone(&state.config),
+            state.app_events.clone(),
             &state.workers,
             state.logger.clone(),
         ),
@@ -193,7 +235,13 @@ fn handle_app_command(
             tray::update_running_menu(controls, next);
         }
         AppCommand::SetInterval(seconds) => {
-            set_interval(seconds, controls, &state.config, &state.logger);
+            set_interval(
+                seconds,
+                controls,
+                &state.paths,
+                &state.config,
+                &state.logger,
+            );
         }
         AppCommand::GenerateTodayVideo => generate_today_video_in_thread(
             state.paths.clone(),
@@ -202,6 +250,16 @@ fn handle_app_command(
             &state.workers,
             state.logger.clone(),
         ),
+        AppCommand::OpenOutputDir => {
+            if let Err(error) = platform::open_path(&state.paths.root) {
+                state.logger.error(format!("打开保存目录失败: {error}"));
+                platform::notify(
+                    "打开保存目录失败",
+                    &format!("{error}"),
+                    state.logger.clone(),
+                );
+            }
+        }
         AppCommand::Quit => {
             state.shutdown.store(true, Ordering::SeqCst);
             save_current_config(&state.paths, &state.config, &state.logger);
@@ -214,13 +272,16 @@ fn handle_app_command(
 fn set_interval(
     seconds: u64,
     controls: &TrayControls,
+    paths: &AppPaths,
     config: &Arc<Mutex<Config>>,
     logger: &Logger,
 ) {
     match config.lock() {
-        Ok(mut config) => {
-            config.interval = seconds;
+        Ok(mut config_guard) => {
+            config_guard.interval = seconds;
             tray::update_interval_menu(controls, seconds);
+            drop(config_guard);
+            save_current_config(paths, config, logger);
         }
         Err(error) => logger.error(format!("更新间隔失败: {error}")),
     }
@@ -229,16 +290,30 @@ fn set_interval(
 fn capture_once_in_thread(
     paths: AppPaths,
     config: Arc<Mutex<Config>>,
+    app_events: mpsc::Sender<AppEvent>,
     workers: &ThreadRegistry,
     logger: Logger,
 ) {
     workers.spawn(move || match cloned_config(&config) {
-        Ok(config) => {
-            if let Err(error) = capture_once(&paths, &config, &logger) {
-                logger.error(format!("手动截屏失败: {error}"));
+        Ok(config) => match capture_once(&paths, &config, &logger) {
+            Ok(path) => {
+                let _ = app_events.send(AppEvent::CaptureSucceeded { path, notify: true });
             }
+            Err(error) => {
+                logger.error(format!("手动截屏失败: {error}"));
+                let _ = app_events.send(AppEvent::CaptureFailed {
+                    message: error.to_string(),
+                    notify: true,
+                });
+            }
+        },
+        Err(error) => {
+            logger.error(format!("读取配置失败: {error}"));
+            let _ = app_events.send(AppEvent::CaptureFailed {
+                message: format!("读取配置失败: {error}"),
+                notify: true,
+            });
         }
-        Err(error) => logger.error(format!("读取配置失败: {error}")),
     });
 }
 
@@ -299,6 +374,7 @@ fn spawn_capture_loop(
     running: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     config: Arc<Mutex<Config>>,
+    app_events: mpsc::Sender<AppEvent>,
     logger: Logger,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
@@ -322,8 +398,20 @@ fn spawn_capture_loop(
                         }
 
                         if now >= next_capture {
-                            if let Err(error) = capture_once(&paths, &config, &logger) {
-                                logger.error(format!("定时截屏失败: {error}"));
+                            match capture_once(&paths, &config, &logger) {
+                                Ok(path) => {
+                                    let _ = app_events.send(AppEvent::CaptureSucceeded {
+                                        path,
+                                        notify: false,
+                                    });
+                                }
+                                Err(error) => {
+                                    logger.error(format!("定时截屏失败: {error}"));
+                                    let _ = app_events.send(AppEvent::CaptureFailed {
+                                        message: error.to_string(),
+                                        notify: false,
+                                    });
+                                }
                             }
                             next_capture = now + Duration::from_secs(interval);
                         }
@@ -344,4 +432,56 @@ fn spawn_capture_loop(
             thread::sleep(Duration::from_secs(1));
         }
     })
+}
+
+fn handle_app_event(
+    event: AppEvent,
+    screenshot_count: &mut u64,
+    last_capture: &mut Option<String>,
+    logger: &Logger,
+) {
+    match event {
+        AppEvent::CaptureSucceeded { path, notify } => {
+            *screenshot_count += 1;
+            *last_capture = Some(format!("已保存 {}", path.display()));
+            if notify {
+                platform::notify(
+                    "截图成功",
+                    &format!("已保存到: {}", path.display()),
+                    logger.clone(),
+                );
+            }
+        }
+        AppEvent::CaptureFailed { message, notify } => {
+            *last_capture = Some(format!("失败: {message}"));
+            if notify {
+                platform::notify("截图失败", &message, logger.clone());
+            }
+        }
+    }
+}
+
+fn update_tray_tooltip(
+    tray_state: &TrayState,
+    app_state: &AppState,
+    screenshot_count: u64,
+    last_capture: Option<&str>,
+) {
+    let interval = cloned_config(&app_state.config)
+        .map(|config| config.interval)
+        .unwrap_or_else(|error| {
+            app_state.logger.error(format!("读取配置失败: {error}"));
+            Config::default().interval
+        });
+    let tooltip = tray::status_tooltip(
+        app_state.running.load(Ordering::SeqCst),
+        interval,
+        screenshot_count,
+        last_capture,
+    );
+    if let Err(error) = tray::update_tooltip(tray_state, &tooltip) {
+        app_state
+            .logger
+            .error(format!("更新托盘状态提示失败: {error}"));
+    }
 }
