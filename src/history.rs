@@ -30,7 +30,12 @@ pub(crate) fn run() -> AppResult<()> {
     let config = load_config(&paths, &logger)?;
     let language = config.language;
     let title = Text::new(language).history_videos();
-    let options = eframe::NativeOptions::default();
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1200.0, 800.0])
+            .with_min_inner_size([960.0, 640.0]),
+        ..Default::default()
+    };
 
     eframe::run_native(
         title,
@@ -420,12 +425,28 @@ impl HistoryApp {
         format!("{}: {done}, {}: {failed}", text.done_label(), text.failed())
     }
 
-    fn available_screen_indices(&self) -> Vec<u32> {
-        let mut indices = BTreeSet::new();
-        for source in &self.sources {
-            indices.extend(source.screen_indices.iter().copied());
+    fn available_generation_modes_for_selection(&self) -> Vec<VideoGenerationMode> {
+        let mut selected = self.sources.iter().filter(|source| source.selected);
+        let Some(first) = selected.next() else {
+            return Vec::new();
+        };
+
+        let mut modes = first.available_generation_modes();
+        for source in selected {
+            let source_modes = source.available_generation_modes();
+            modes.retain(|mode| source_modes.contains(mode));
         }
-        indices.into_iter().collect()
+        modes
+    }
+
+    fn reconcile_generation_mode_with_selection(&mut self) {
+        let modes = self.available_generation_modes_for_selection();
+        if let Some(mode) = modes.first().copied() {
+            if !modes.contains(&self.generation_mode) {
+                self.generation_mode = mode;
+            }
+        }
+        self.apply_generation_mode();
     }
 
     fn set_generation_mode(&mut self, mode: VideoGenerationMode) {
@@ -437,24 +458,12 @@ impl HistoryApp {
     }
 
     fn ensure_generation_mode_available(&mut self) {
-        let VideoGenerationMode::SingleScreen(index) = self.generation_mode else {
-            return;
-        };
-        if !self
-            .sources
-            .iter()
-            .any(|source| source.screen_indices.contains(&index))
-        {
-            self.generation_mode = VideoGenerationMode::MultiScreen;
-        }
+        self.reconcile_generation_mode_with_selection();
     }
 
     fn apply_generation_mode(&mut self) {
         let mode = self.generation_mode;
         for source in &mut self.sources {
-            if !source.can_generate_for_mode(mode) {
-                source.selected = false;
-            }
             if !matches!(source.status, SourceStatus::Generating { .. }) {
                 source.status = source.status_for_mode(mode);
             }
@@ -465,155 +474,893 @@ impl HistoryApp {
 impl eframe::App for HistoryApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_events();
+        if !self.generating {
+            self.reconcile_generation_mode_with_selection();
+        }
         if self.generating {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
         let text = self.text();
-
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(text.history_videos());
-                ui.separator();
-                if ui
-                    .add_enabled(!self.generating, egui::Button::new(text.refresh()))
-                    .clicked()
-                {
-                    self.refresh_sources();
-                }
-                if ui
-                    .add_enabled(!self.generating, egui::Button::new(text.add_folder()))
-                    .clicked()
-                {
-                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                        self.add_external_folder(folder);
-                    }
-                }
-                ui.separator();
-                ui.label(text.generation_mode());
-                let mut selected_mode = self.generation_mode;
-                let available_screen_indices = self.available_screen_indices();
-                ui.add_enabled_ui(!self.generating, |ui| {
-                    egui::ComboBox::from_id_salt("history_generation_mode")
-                        .selected_text(generation_mode_label(&text, self.generation_mode))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut selected_mode,
-                                VideoGenerationMode::MultiScreen,
-                                text.multi_screen_generation_mode(),
-                            );
-                            for screen_index in available_screen_indices {
-                                ui.selectable_value(
-                                    &mut selected_mode,
-                                    VideoGenerationMode::SingleScreen(screen_index),
-                                    text.generation_screen_mode(screen_index),
-                                );
-                            }
-                        });
-                });
-                if !self.generating && selected_mode != self.generation_mode {
-                    self.set_generation_mode(selected_mode);
-                }
-                ui.separator();
-                let can_generate = self.sources.iter().any(|source| {
-                    source.selected && source.can_generate_for_mode(self.generation_mode)
-                });
-                if ui
-                    .add_enabled(
-                        !self.generating && can_generate,
-                        egui::Button::new(text.generate_selected()),
-                    )
-                    .clicked()
-                {
-                    self.start_generation(ctx.clone());
-                }
+        let selected_count = self.sources.iter().filter(|source| source.selected).count();
+        let available_modes = self.available_generation_modes_for_selection();
+        let can_generate = !self.generating
+            && !available_modes.is_empty()
+            && self.sources.iter().any(|source| {
+                source.selected && source.can_generate_for_mode(self.generation_mode)
             });
-        });
+
+        egui::TopBottomPanel::top("history_toolbar")
+            .frame(
+                egui::Frame::none()
+                    .fill(history_bg())
+                    .inner_margin(egui::Margin::symmetric(24.0, 0.0)),
+            )
+            .show(ctx, |ui| {
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.heading(
+                            egui::RichText::new(text.history_videos())
+                                .size(24.0)
+                                .color(history_text()),
+                        );
+                        ui.add_space(3.0);
+                        ui.label(
+                            egui::RichText::new(history_subtitle(self.config.language))
+                                .color(history_muted()),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(4.0);
+                        if ui
+                            .add_sized([136.0, 42.0], egui::Button::new(text.open_videos_folder()))
+                            .clicked()
+                        {
+                            if let Err(error) = platform::open_path(&self.paths.videos) {
+                                self.status_message = error.to_string();
+                            }
+                        }
+                        if add_enabled_sized(
+                            ui,
+                            !self.generating,
+                            [126.0, 42.0],
+                            egui::Button::new(text.add_folder()),
+                        )
+                        .clicked()
+                        {
+                            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                                self.add_external_folder(folder);
+                            }
+                        }
+                        if add_enabled_sized(
+                            ui,
+                            !self.generating,
+                            [96.0, 42.0],
+                            egui::Button::new(text.refresh()),
+                        )
+                        .clicked()
+                        {
+                            self.refresh_sources();
+                        }
+                    });
+                });
+
+                ui.add_space(14.0);
+                egui::Frame::none()
+                    .fill(history_card())
+                    .stroke(egui::Stroke::new(1.0, history_border()))
+                    .rounding(egui::Rounding::same(12.0))
+                    .inner_margin(egui::Margin::symmetric(18.0, 14.0))
+                    .show(ui, |ui| {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(ui.available_width(), HISTORY_MODE_ROW_HEIGHT),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.add_sized(
+                                    [92.0, HISTORY_MODE_ROW_HEIGHT],
+                                    egui::Label::new(
+                                        egui::RichText::new(text.generation_mode())
+                                            .strong()
+                                            .color(history_muted()),
+                                    )
+                                    .halign(egui::Align::Min),
+                                );
+                                ui.add_space(14.0);
+                                if available_modes.is_empty() {
+                                    let label = if selected_count == 0 {
+                                        text.no_selection()
+                                    } else {
+                                        text.current_mode_unavailable()
+                                    };
+                                    ui.add_sized(
+                                        [112.0, HISTORY_MODE_ROW_HEIGHT],
+                                        egui::Label::new(
+                                            egui::RichText::new(label).color(history_muted()),
+                                        )
+                                        .halign(egui::Align::Center),
+                                    );
+                                } else {
+                                    for mode in &available_modes {
+                                        if mode_button(
+                                            ui,
+                                            &generation_mode_label(&text, *mode),
+                                            *mode == self.generation_mode,
+                                            !self.generating,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.set_generation_mode(*mode);
+                                        }
+                                    }
+                                }
+
+                                ui.add_space(18.0);
+                                show_history_mode_summary(
+                                    ui,
+                                    text.selected_count(selected_count),
+                                    total_sources_label(self.config.language, self.sources.len()),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if add_enabled_sized(
+                                            ui,
+                                            can_generate,
+                                            [160.0, HISTORY_MODE_ROW_HEIGHT],
+                                            egui::Button::new(
+                                                egui::RichText::new(text.generate_selected())
+                                                    .strong()
+                                                    .color(egui::Color32::WHITE),
+                                            )
+                                            .fill(history_blue()),
+                                        )
+                                        .clicked()
+                                        {
+                                            self.start_generation(ctx.clone());
+                                        }
+                                    },
+                                );
+                            },
+                        );
+                    });
+                ui.add_space(12.0);
+            });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let selected = self.sources.iter().filter(|source| source.selected).count();
-                ui.label(text.selected_count(selected));
+                ui.label(
+                    egui::RichText::new(ready_label(self.config.language)).color(history_muted()),
+                );
                 if !self.status_message.is_empty() {
                     ui.separator();
-                    ui.label(&self.status_message);
+                    ui.label(egui::RichText::new(&self.status_message).color(history_muted()));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(text.open_videos_folder()).clicked() {
-                        if let Err(error) = platform::open_path(&self.paths.videos) {
-                            self.status_message = error.to_string();
-                        }
-                    }
+                    ui.label(
+                        egui::RichText::new(text.selected_count(selected_count))
+                            .color(history_muted()),
+                    );
                 });
             });
         });
 
         egui::SidePanel::right("details")
             .resizable(true)
-            .default_width(280.0)
+            .default_width(340.0)
+            .frame(egui::Frame::none().fill(history_bg()))
             .show(ctx, |ui| {
-                ui.heading(text.selected_folders());
-                let selected = self
-                    .sources
-                    .iter()
-                    .filter(|source| source.selected)
-                    .collect::<Vec<_>>();
-                if selected.is_empty() {
-                    ui.label(text.no_selection());
-                } else {
-                    for source in selected {
-                        ui.separator();
-                        ui.label(&source.label);
-                        ui.small(format!(
-                            "{}: {}",
-                            text.output(),
-                            source.output_path_for_mode(self.generation_mode).display()
-                        ));
-                    }
-                }
-                ui.separator();
-                ui.label(format!(
-                    "{}: {}",
-                    text.generation_mode(),
-                    generation_mode_label(&text, self.generation_mode)
-                ));
-                ui.label(format!("FPS: {}", self.config.fps));
-                ui.label(format!("Codec: {}", self.config.video_codec.config_value()));
+                ui.add_space(8.0);
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::Frame::none()
+                        .fill(history_card())
+                        .stroke(egui::Stroke::new(1.0, history_border()))
+                        .rounding(egui::Rounding::same(12.0))
+                        .inner_margin(egui::Margin::same(18.0))
+                        .show(ui, |ui| {
+                            show_details_panel(ui, self, &text, selected_count);
+                        });
+                    ui.add_space(32.0);
+                });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                egui::Grid::new("sources")
-                    .striped(true)
-                    .min_col_width(80.0)
-                    .show(ui, |ui| {
-                        ui.label("");
-                        ui.strong(text.date_or_folder());
-                        ui.strong(text.images());
-                        ui.strong(text.video());
-                        ui.strong(text.status());
-                        ui.end_row();
-
-                        for source in &mut self.sources {
-                            let enabled = !self.generating
-                                && source.can_generate_for_mode(self.generation_mode);
-                            ui.add_enabled(enabled, egui::Checkbox::new(&mut source.selected, ""));
-                            ui.label(source.display_label());
-                            ui.label(source.image_count.to_string());
+            ui.add_space(8.0);
+            let mut selection_changed = false;
+            egui::Frame::none()
+                .fill(history_card())
+                .stroke(egui::Stroke::new(1.0, history_border()))
+                .rounding(egui::Rounding::same(12.0))
+                .inner_margin(egui::Margin::same(16.0))
+                .show(ui, |ui| {
+                    ui.heading(
+                        egui::RichText::new(folder_list_title(self.config.language))
+                            .size(22.0)
+                            .color(history_text()),
+                    );
+                    ui.label(
+                        egui::RichText::new(folder_list_hint(self.config.language))
+                            .color(history_muted()),
+                    );
+                    ui.add_space(16.0);
+                    let source_scroll_style = source_scroll_style();
+                    let table_layout = SourceTableLayout::new(
+                        (ui.available_width() - source_scroll_style.allocated_width()).max(1.0),
+                    );
+                    show_source_header(ui, &text, table_layout);
+                    ui.add_space(SOURCE_ROW_GAP);
+                    ui.scope(|ui| {
+                        ui.style_mut().spacing.scroll = source_scroll_style;
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for source in &mut self.sources {
+                                let changed = show_source_card(
+                                    ui,
+                                    source,
+                                    table_layout,
+                                    self.generation_mode,
+                                    self.config.language,
+                                    !self.generating,
+                                    &text,
+                                );
+                                selection_changed |= changed;
+                                ui.add_space(SOURCE_ROW_GAP);
+                            }
+                            ui.add_space(8.0);
                             ui.label(
-                                if source.output_path_for_mode(self.generation_mode).exists() {
-                                    text.exists()
-                                } else {
-                                    text.missing()
-                                },
+                                egui::RichText::new(loaded_sources_label(
+                                    self.config.language,
+                                    self.sources.len(),
+                                ))
+                                .color(history_muted()),
                             );
-                            ui.label(source.status_label(self.config.language));
-                            ui.end_row();
-                        }
+                            ui.add_space(28.0);
+                        });
                     });
-            });
+                });
+            if selection_changed {
+                self.reconcile_generation_mode_with_selection();
+                ctx.request_repaint();
+            }
         });
 
         self.show_generation_dialog(ctx);
+    }
+}
+
+fn history_bg() -> egui::Color32 {
+    egui::Color32::from_rgb(247, 248, 250)
+}
+
+fn history_card() -> egui::Color32 {
+    egui::Color32::WHITE
+}
+
+fn history_card_selected() -> egui::Color32 {
+    egui::Color32::from_rgb(244, 248, 255)
+}
+
+fn history_border() -> egui::Color32 {
+    egui::Color32::from_rgb(218, 222, 228)
+}
+
+fn history_blue() -> egui::Color32 {
+    egui::Color32::from_rgb(38, 111, 255)
+}
+
+fn history_blue_soft() -> egui::Color32 {
+    egui::Color32::from_rgb(232, 240, 255)
+}
+
+fn history_green() -> egui::Color32 {
+    egui::Color32::from_rgb(28, 155, 93)
+}
+
+fn history_green_soft() -> egui::Color32 {
+    egui::Color32::from_rgb(222, 246, 234)
+}
+
+fn history_text() -> egui::Color32 {
+    egui::Color32::from_rgb(32, 38, 46)
+}
+
+fn history_muted() -> egui::Color32 {
+    egui::Color32::from_rgb(101, 112, 126)
+}
+
+const HISTORY_MODE_ROW_HEIGHT: f32 = 44.0;
+const HISTORY_MODE_SUMMARY_WIDTH: f32 = 150.0;
+const HISTORY_MODE_SUMMARY_CONTENT_HEIGHT: f32 = 36.0;
+
+fn show_history_mode_summary(ui: &mut egui::Ui, selected_label: String, total_label: String) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(HISTORY_MODE_SUMMARY_WIDTH, HISTORY_MODE_ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let top = rect.center().y - HISTORY_MODE_SUMMARY_CONTENT_HEIGHT / 2.0;
+    let selected_rect =
+        egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), 20.0));
+    let total_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.left(), top + 20.0),
+        egui::vec2(rect.width(), 16.0),
+    );
+
+    ui.put(
+        selected_rect,
+        egui::Label::new(
+            egui::RichText::new(&selected_label)
+                .strong()
+                .color(history_text()),
+        )
+        .truncate()
+        .halign(egui::Align::Min),
+    )
+    .on_hover_text(&selected_label);
+    ui.put(
+        total_rect,
+        egui::Label::new(
+            egui::RichText::new(&total_label)
+                .small()
+                .color(history_muted()),
+        )
+        .truncate()
+        .halign(egui::Align::Min),
+    )
+    .on_hover_text(total_label);
+    ui.advance_cursor_after_rect(rect);
+}
+
+fn mode_button(ui: &mut egui::Ui, label: &str, selected: bool, enabled: bool) -> egui::Response {
+    let fill = if selected {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::from_rgb(239, 242, 246)
+    };
+    let stroke = if selected {
+        egui::Stroke::new(1.5, history_blue())
+    } else {
+        egui::Stroke::NONE
+    };
+    let text_color = if selected {
+        history_blue()
+    } else {
+        history_muted()
+    };
+    add_enabled_sized(
+        ui,
+        enabled,
+        [112.0, HISTORY_MODE_ROW_HEIGHT],
+        egui::Button::new(egui::RichText::new(label).strong().color(text_color))
+            .fill(fill)
+            .stroke(stroke),
+    )
+}
+
+fn add_enabled_sized(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    size: [f32; 2],
+    widget: impl egui::Widget,
+) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| ui.add_sized(size, widget))
+        .inner
+}
+
+fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, selected_count: usize) {
+    ui.heading(
+        egui::RichText::new(text.selected_folders())
+            .size(22.0)
+            .color(history_text()),
+    );
+    ui.add_space(14.0);
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgb(248, 250, 252))
+        .stroke(egui::Stroke::new(1.0, history_border()))
+        .rounding(egui::Rounding::same(12.0))
+        .inner_margin(egui::Margin::same(14.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(selected_count.to_string())
+                        .size(26.0)
+                        .strong()
+                        .color(history_blue()),
+                );
+                ui.label(
+                    egui::RichText::new(selected_summary_label(app.config.language))
+                        .strong()
+                        .color(history_text()),
+                );
+            });
+            ui.label(
+                egui::RichText::new(selection_hint(app.config.language)).color(history_muted()),
+            );
+        });
+
+    ui.add_space(18.0);
+    ui.label(
+        egui::RichText::new(text.selected_folders())
+            .strong()
+            .color(history_text()),
+    );
+    ui.add_space(8.0);
+    let selected = app
+        .sources
+        .iter()
+        .filter(|source| source.selected)
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        ui.label(egui::RichText::new(text.no_selection()).color(history_muted()));
+    } else {
+        for source in selected.iter().take(4) {
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgb(250, 251, 253))
+                .stroke(egui::Stroke::new(1.0, history_border()))
+                .rounding(egui::Rounding::same(8.0))
+                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&source.label).color(history_text()))
+                            .truncate(),
+                    )
+                    .on_hover_text(&source.label);
+                    let output = format!(
+                        "{}: {}",
+                        text.output(),
+                        source.output_path_for_mode(app.generation_mode).display()
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&output).small().color(history_muted()),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(output);
+                });
+            ui.add_space(6.0);
+        }
+        if selected.len() > 4 {
+            ui.label(
+                egui::RichText::new(more_selected_label(app.config.language, selected.len() - 4))
+                    .color(history_muted()),
+            );
+        }
+    }
+
+    ui.add_space(18.0);
+    ui.label(
+        egui::RichText::new(generation_params_label(app.config.language))
+            .strong()
+            .color(history_text()),
+    );
+    ui.add_space(8.0);
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgb(248, 250, 252))
+        .stroke(egui::Stroke::new(1.0, history_border()))
+        .rounding(egui::Rounding::same(12.0))
+        .inner_margin(egui::Margin::same(14.0))
+        .show(ui, |ui| {
+            detail_row(
+                ui,
+                text.generation_mode(),
+                &generation_mode_label(text, app.generation_mode),
+            );
+            detail_row(ui, "FPS", &app.config.fps.to_string());
+            detail_row(ui, "Codec", app.config.video_codec.config_value());
+        });
+
+    ui.add_space(18.0);
+    show_output_location_footer(ui, app);
+    ui.add_space(14.0);
+}
+
+fn show_output_location_footer(ui: &mut egui::Ui, app: &mut HistoryApp) {
+    ui.label(
+        egui::RichText::new(output_location_label(app.config.language))
+            .strong()
+            .color(history_text()),
+    );
+    ui.add_space(8.0);
+    egui::Frame::none()
+        .fill(egui::Color32::from_rgb(245, 247, 250))
+        .stroke(egui::Stroke::new(1.0, history_border()))
+        .rounding(egui::Rounding::same(12.0))
+        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let path = app.paths.videos.display().to_string();
+                let button_width = 72.0;
+                let path_width = (ui.available_width() - button_width - 12.0).max(48.0);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(path_width, 30.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&path).small().color(history_muted()),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(path);
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    egui::vec2(button_width, 30.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        if ui.button(open_label(app.config.language)).clicked() {
+                            if let Err(error) = platform::open_path(&app.paths.videos) {
+                                app.status_message = error.to_string();
+                            }
+                        }
+                    },
+                );
+            });
+        });
+}
+
+fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).color(history_muted()));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(value).strong().color(history_text()));
+        });
+    });
+}
+
+const SOURCE_LEADING_WIDTH: f32 = 88.0;
+const SOURCE_IMAGES_WIDTH: f32 = 72.0;
+const SOURCE_VIDEO_WIDTH: f32 = 96.0;
+const SOURCE_STATUS_WIDTH: f32 = 96.0;
+const SOURCE_COLUMN_GAP: f32 = 10.0;
+const SOURCE_ROW_PADDING_X: f32 = 12.0;
+const SOURCE_HEADER_HEIGHT: f32 = 44.0;
+const SOURCE_ROW_HEIGHT: f32 = 68.0;
+const SOURCE_ROW_GAP: f32 = 8.0;
+const SOURCE_SCROLLBAR_WIDTH: f32 = 8.0;
+const SOURCE_SCROLLBAR_GAP: f32 = 12.0;
+
+#[derive(Clone, Copy)]
+struct SourceTableLayout {
+    row_width: f32,
+    leading: f32,
+    name: f32,
+    images: f32,
+    video: f32,
+    status: f32,
+    gap: f32,
+    padding_x: f32,
+}
+
+#[derive(Clone, Copy)]
+struct SourceColumnRects {
+    leading: egui::Rect,
+    name: egui::Rect,
+    images: egui::Rect,
+    video: egui::Rect,
+    status: egui::Rect,
+}
+
+fn source_scroll_style() -> egui::style::ScrollStyle {
+    let mut style = egui::style::ScrollStyle::solid();
+    style.bar_width = SOURCE_SCROLLBAR_WIDTH;
+    style.bar_inner_margin = SOURCE_SCROLLBAR_GAP;
+    style
+}
+
+impl SourceTableLayout {
+    fn new(available_width: f32) -> Self {
+        let row_width = available_width.max(1.0);
+        let content_width = (row_width - SOURCE_ROW_PADDING_X * 2.0).max(1.0);
+        let compact = content_width < 500.0;
+        let (leading, images, video, status, gap) = if compact {
+            (74.0, 52.0, 76.0, 76.0, 8.0)
+        } else {
+            (
+                SOURCE_LEADING_WIDTH,
+                SOURCE_IMAGES_WIDTH,
+                SOURCE_VIDEO_WIDTH,
+                SOURCE_STATUS_WIDTH,
+                SOURCE_COLUMN_GAP,
+            )
+        };
+        let fixed_width = leading + images + video + status + gap * 4.0;
+        Self {
+            row_width,
+            leading,
+            name: (content_width - fixed_width).max(0.0),
+            images,
+            video,
+            status,
+            gap,
+            padding_x: SOURCE_ROW_PADDING_X,
+        }
+    }
+
+    fn column_rects(&self, row_rect: egui::Rect) -> SourceColumnRects {
+        let mut x = row_rect.left() + self.padding_x;
+        let y = row_rect.top();
+        let h = row_rect.height();
+        let leading = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(self.leading, h));
+        x = leading.right() + self.gap;
+        let name = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(self.name, h));
+        x = name.right() + self.gap;
+        let images = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(self.images, h));
+        x = images.right() + self.gap;
+        let video = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(self.video, h));
+        x = video.right() + self.gap;
+        let status = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(self.status, h));
+        SourceColumnRects {
+            leading,
+            name,
+            images,
+            video,
+            status,
+        }
+    }
+}
+
+fn show_source_header(ui: &mut egui::Ui, text: &Text, layout: SourceTableLayout) {
+    let (row_rect, _) = ui.allocate_exact_size(
+        egui::vec2(layout.row_width, SOURCE_HEADER_HEIGHT),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(
+        row_rect,
+        egui::Rounding::same(0.0),
+        egui::Color32::from_rgb(248, 250, 252),
+    );
+    let columns = layout.column_rects(row_rect);
+    show_header_label(ui, columns.name, text.date_or_folder(), egui::Align::Min);
+    show_header_label(ui, columns.images, text.images(), egui::Align::Center);
+    show_header_label(ui, columns.video, text.video(), egui::Align::Center);
+    show_header_label(ui, columns.status, text.status(), egui::Align::Center);
+    ui.advance_cursor_after_rect(row_rect);
+}
+
+fn show_header_label(ui: &mut egui::Ui, rect: egui::Rect, label: &str, align: egui::Align) {
+    let rect = rect.shrink2(egui::vec2(4.0, 0.0));
+    ui.put(
+        rect,
+        egui::Label::new(egui::RichText::new(label).size(15.0).color(history_muted()))
+            .truncate()
+            .halign(align),
+    )
+    .on_hover_text(label);
+}
+
+fn show_source_card(
+    ui: &mut egui::Ui,
+    source: &mut VideoSource,
+    layout: SourceTableLayout,
+    mode: VideoGenerationMode,
+    language: Language,
+    enabled: bool,
+    text: &Text,
+) -> bool {
+    let before = source.selected;
+    let can_select = enabled && !source.available_generation_modes().is_empty();
+    let fill = if source.selected {
+        history_card_selected()
+    } else {
+        history_card()
+    };
+    let stroke = if source.selected {
+        egui::Stroke::new(1.4, egui::Color32::from_rgb(172, 196, 255))
+    } else {
+        egui::Stroke::new(1.0, history_border())
+    };
+    let (row_rect, _) = ui.allocate_exact_size(
+        egui::vec2(layout.row_width, SOURCE_ROW_HEIGHT),
+        egui::Sense::hover(),
+    );
+    ui.painter()
+        .rect(row_rect, egui::Rounding::same(12.0), fill, stroke);
+    let columns = layout.column_rects(row_rect);
+
+    let checkbox_rect = egui::Rect::from_center_size(
+        egui::pos2(columns.leading.left() + 22.0, row_rect.center().y),
+        egui::vec2(24.0, 24.0),
+    );
+    ui.add_enabled_ui(can_select, |ui| {
+        ui.put(checkbox_rect, egui::Checkbox::new(&mut source.selected, ""));
+    });
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(columns.leading.left() + 58.0, row_rect.center().y),
+        egui::vec2(34.0, 28.0),
+    );
+    paint_folder_icon(ui, icon_rect);
+
+    let name_rect = egui::Rect::from_min_max(
+        egui::pos2(columns.name.left(), row_rect.top() + 10.0),
+        egui::pos2(columns.name.right(), row_rect.top() + 34.0),
+    );
+    ui.put(
+        name_rect,
+        egui::Label::new(
+            egui::RichText::new(&source.label)
+                .strong()
+                .color(history_text()),
+        )
+        .truncate(),
+    )
+    .on_hover_text(&source.label);
+    let subtitle_rect = egui::Rect::from_min_max(
+        egui::pos2(columns.name.left(), row_rect.top() + 36.0),
+        egui::pos2(columns.name.right(), row_rect.top() + 56.0),
+    );
+    ui.put(
+        subtitle_rect,
+        egui::Label::new(
+            egui::RichText::new(source_origin_label(language, source.external))
+                .small()
+                .color(history_muted()),
+        )
+        .truncate(),
+    );
+
+    paint_centered_text(ui, columns.images, &source.image_count.to_string());
+    let video_label = if source.output_path_for_mode(mode).exists() {
+        text.exists()
+    } else {
+        text.missing()
+    };
+    paint_chip(
+        ui,
+        columns.video,
+        video_label,
+        history_blue_soft(),
+        history_blue(),
+    );
+    paint_chip(
+        ui,
+        columns.status,
+        &source.status_label(language),
+        history_green_soft(),
+        history_green(),
+    );
+
+    let changed = source.selected != before;
+    ui.advance_cursor_after_rect(row_rect);
+    changed
+}
+
+fn paint_centered_text(ui: &egui::Ui, rect: egui::Rect, value: &str) {
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        value,
+        egui::FontId::proportional(16.0),
+        history_text(),
+    );
+}
+
+fn paint_chip(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    fill: egui::Color32,
+    color: egui::Color32,
+) {
+    let chip_rect = egui::Rect::from_center_size(
+        rect.center(),
+        egui::vec2((rect.width() - 12.0).max(36.0), 34.0),
+    );
+    ui.painter()
+        .rect_filled(chip_rect, egui::Rounding::same(12.0), fill);
+    ui.put(
+        chip_rect.shrink2(egui::vec2(8.0, 0.0)),
+        egui::Label::new(egui::RichText::new(label).small().color(color)).truncate(),
+    )
+    .on_hover_text(label);
+}
+
+fn paint_folder_icon(ui: &egui::Ui, rect: egui::Rect) {
+    let painter = ui.painter();
+    let tab = egui::Rect::from_min_size(rect.min + egui::vec2(3.0, 3.0), egui::vec2(17.0, 9.0));
+    let body = egui::Rect::from_min_size(rect.min + egui::vec2(2.0, 9.0), egui::vec2(30.0, 18.0));
+    painter.rect_filled(
+        tab,
+        egui::Rounding::same(4.0),
+        egui::Color32::from_rgb(255, 221, 130),
+    );
+    painter.rect_filled(
+        body,
+        egui::Rounding::same(5.0),
+        egui::Color32::from_rgb(255, 205, 96),
+    );
+}
+
+fn history_subtitle(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "按日期和文件夹管理截图序列，选择后生成视频。",
+        Language::En => {
+            "Manage screenshot folders by date, then generate videos from the selection."
+        }
+    }
+}
+
+fn folder_list_title(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "文件夹",
+        Language::En => "Folders",
+    }
+}
+
+fn folder_list_hint(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "最近截图序列优先显示，可多选批量生成。",
+        Language::En => "Recent screenshot folders appear first and can be selected in batches.",
+    }
+}
+
+fn total_sources_label(language: Language, count: usize) -> String {
+    match language {
+        Language::ZhCn => format!("共 {count} 个文件夹"),
+        Language::En => format!("{count} folders total"),
+    }
+}
+
+fn loaded_sources_label(language: Language, count: usize) -> String {
+    match language {
+        Language::ZhCn => format!("状态：已加载 {count} 个文件夹"),
+        Language::En => format!("Status: {count} folders loaded"),
+    }
+}
+
+fn ready_label(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "就绪",
+        Language::En => "Ready",
+    }
+}
+
+fn selected_summary_label(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "个文件夹已选中",
+        Language::En => "folders selected",
+    }
+}
+
+fn selection_hint(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "将按当前生成逻辑输出到视频目录。",
+        Language::En => "Videos will be written to the configured video folder.",
+    }
+}
+
+fn generation_params_label(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "生成参数",
+        Language::En => "Generation Settings",
+    }
+}
+
+fn output_location_label(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "输出位置",
+        Language::En => "Output Location",
+    }
+}
+
+fn open_label(language: Language) -> &'static str {
+    match language {
+        Language::ZhCn => "打开",
+        Language::En => "Open",
+    }
+}
+
+fn source_origin_label(language: Language, external: bool) -> &'static str {
+    match (language, external) {
+        (Language::ZhCn, true) => "外部文件夹",
+        (Language::ZhCn, false) => "默认保存目录",
+        (Language::En, true) => "External folder",
+        (Language::En, false) => "Default folder",
+    }
+}
+
+fn more_selected_label(language: Language, count: usize) -> String {
+    match language {
+        Language::ZhCn => format!("另有 {count} 项已选中"),
+        Language::En => format!("{count} more selected"),
     }
 }
 
@@ -716,6 +1463,28 @@ fn progress_status_label(text: &Text, progress: &VideoGenerationProgress) -> Str
 }
 
 impl VideoSource {
+    fn available_generation_modes(&self) -> Vec<VideoGenerationMode> {
+        if self.image_count == 0 {
+            return Vec::new();
+        }
+
+        let mut screen_indices = self.screen_indices.clone();
+        if self.single_compatible_count > 0 {
+            screen_indices.insert(1);
+        }
+
+        let mut modes = Vec::new();
+        if self.screen_indices.len() > 1 {
+            modes.push(VideoGenerationMode::MultiScreen);
+        }
+        modes.extend(
+            screen_indices
+                .into_iter()
+                .map(VideoGenerationMode::SingleScreen),
+        );
+        modes
+    }
+
     fn can_generate_for_mode(&self, mode: VideoGenerationMode) -> bool {
         self.has_compatible_images(mode)
             && !matches!(
@@ -748,14 +1517,6 @@ impl VideoSource {
 
     fn output_path_for_mode(&self, mode: VideoGenerationMode) -> PathBuf {
         output_path_for_mode(&self.output_path, mode)
-    }
-
-    fn display_label(&self) -> String {
-        if self.external {
-            format!("{} *", self.label)
-        } else {
-            self.label.clone()
-        }
     }
 
     fn status_label(&self, language: Language) -> String {
@@ -906,13 +1667,22 @@ mod tests {
     }
 
     fn source_with_screens(id: u64, screens: &[u32], selected: bool) -> VideoSource {
+        source_with_stats(id, screens, 0, selected)
+    }
+
+    fn source_with_stats(
+        id: u64,
+        screens: &[u32],
+        single_compatible_count: usize,
+        selected: bool,
+    ) -> VideoSource {
         VideoSource {
             id,
             label: format!("source-{id}"),
             input_dir: PathBuf::from(format!("input-{id}")),
             output_path: PathBuf::from(format!("video-{id}.mp4")),
-            image_count: screens.len(),
-            single_compatible_count: 0,
+            image_count: screens.len() + single_compatible_count,
+            single_compatible_count,
             screen_indices: screens.iter().copied().collect(),
             selected,
             external: false,
@@ -963,7 +1733,76 @@ mod tests {
     }
 
     #[test]
-    fn generation_mode_change_clears_incompatible_selected_sources() {
+    fn single_folder_with_one_screen_returns_only_that_screen_mode() {
+        let source = source_with_screens(1, &[1], true);
+
+        assert_eq!(
+            source.available_generation_modes(),
+            vec![VideoGenerationMode::SingleScreen(1)]
+        );
+    }
+
+    #[test]
+    fn single_folder_with_multiple_screens_returns_multi_and_screen_modes() {
+        let source = source_with_screens(1, &[1, 2], true);
+
+        assert_eq!(
+            source.available_generation_modes(),
+            vec![
+                VideoGenerationMode::MultiScreen,
+                VideoGenerationMode::SingleScreen(1),
+                VideoGenerationMode::SingleScreen(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_single_images_are_exposed_as_screen_one() {
+        let source = source_with_stats(1, &[], 3, true);
+
+        assert_eq!(
+            source.available_generation_modes(),
+            vec![VideoGenerationMode::SingleScreen(1)]
+        );
+    }
+
+    #[test]
+    fn multiple_selected_folders_return_common_generation_modes() {
+        let root = test_dir();
+        let paths = test_paths(&root);
+        let logger = Logger::new(&paths).expect("create logger");
+        let mut app = HistoryApp::new(paths, Config::default(), logger);
+        app.sources = vec![
+            source_with_screens(1, &[1, 2], true),
+            source_with_screens(2, &[2, 3], true),
+        ];
+
+        assert_eq!(
+            app.available_generation_modes_for_selection(),
+            vec![
+                VideoGenerationMode::MultiScreen,
+                VideoGenerationMode::SingleScreen(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn reconcile_generation_mode_switches_invalid_mode_to_first_common_mode() {
+        let root = test_dir();
+        let paths = test_paths(&root);
+        let logger = Logger::new(&paths).expect("create logger");
+        let mut app = HistoryApp::new(paths, Config::default(), logger);
+        app.generation_mode = VideoGenerationMode::MultiScreen;
+        app.sources = vec![source_with_screens(1, &[1], true)];
+
+        app.reconcile_generation_mode_with_selection();
+
+        assert!(app.sources[0].selected);
+        assert_eq!(app.generation_mode, VideoGenerationMode::SingleScreen(1));
+    }
+
+    #[test]
+    fn incompatible_multi_selection_keeps_selection_and_returns_no_modes() {
         let root = test_dir();
         let paths = test_paths(&root);
         let logger = Logger::new(&paths).expect("create logger");
@@ -973,15 +1812,11 @@ mod tests {
             source_with_screens(2, &[2], true),
         ];
 
-        app.set_generation_mode(VideoGenerationMode::SingleScreen(1));
+        assert!(app.available_generation_modes_for_selection().is_empty());
+        app.reconcile_generation_mode_with_selection();
 
         assert!(app.sources[0].selected);
-        assert!(app.sources[0].can_generate_for_mode(app.generation_mode));
-        assert!(!app.sources[1].selected);
-        assert!(matches!(
-            app.sources[1].status,
-            SourceStatus::ModeUnavailable
-        ));
+        assert!(app.sources[1].selected);
     }
 
     #[test]
