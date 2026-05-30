@@ -1,4 +1,4 @@
-use crate::logging::Logger;
+use crate::{config::Language, logging::Logger};
 use std::{
     env, fs, io,
     path::{Path, PathBuf},
@@ -91,16 +91,19 @@ pub(crate) fn hide_console(cmd: &mut Command) {
     CurrentPlatform::hide_console(cmd);
 }
 
-pub(crate) fn notify_screen_capture_failure(logger: &Logger) {
+pub(crate) fn notify_screen_capture_failure(logger: &Logger, language: Language) {
     #[cfg(target_os = "macos")]
-    notify(
-        "截屏权限不足",
-        "无法读取屏幕内容，请在系统设置中允许屏幕录制权限。",
-        logger.clone(),
-    );
+    {
+        let text = crate::i18n::Text::new(language);
+        notify(
+            text.screen_capture_permission_title(),
+            text.screen_capture_permission_body(),
+            logger.clone(),
+        );
+    }
 
     #[cfg(target_os = "windows")]
-    let _ = logger;
+    let _ = (logger, language);
 }
 
 pub(crate) fn find_ffmpeg_binary(

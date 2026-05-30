@@ -3,6 +3,7 @@
 mod app;
 mod capture;
 mod config;
+mod i18n;
 mod logging;
 mod paths;
 mod platform;

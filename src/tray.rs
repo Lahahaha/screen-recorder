@@ -1,6 +1,7 @@
 use crate::{
     app::AppResult,
-    config::{Config, SUPPORTED_INTERVALS},
+    config::{Config, Language, SUPPORTED_INTERVALS},
+    i18n::{Text, APP_NAME},
 };
 use std::{
     io,
@@ -11,8 +12,6 @@ use tray_icon::{
     Icon, TrayIcon, TrayIconBuilder,
 };
 
-const APP_NAME: &str = "Screen Recorder";
-
 pub(crate) struct TrayControls {
     menu: Menu,
     capture_now: MenuItem,
@@ -21,6 +20,8 @@ pub(crate) struct TrayControls {
     interval_items: Vec<(u64, CheckMenuItem)>,
     generate_video: MenuItem,
     open_output_dir: MenuItem,
+    language_menu: Submenu,
+    language_items: Vec<(Language, CheckMenuItem)>,
     quit: MenuItem,
 }
 
@@ -34,6 +35,7 @@ pub(crate) enum AppCommand {
     CaptureNow,
     ToggleRunning,
     SetInterval(u64),
+    SetLanguage(Language),
     GenerateTodayVideo,
     OpenOutputDir,
     Quit,
@@ -43,12 +45,12 @@ pub(crate) fn create_tray_state(
     config: &Arc<Mutex<Config>>,
     is_running: bool,
 ) -> AppResult<TrayState> {
-    let interval = config
+    let config = config
         .lock()
         .map_err(|error| io::Error::other(error.to_string()))?
-        .interval;
-    let controls = build_menu(interval)?;
-    update_running_menu(&controls, is_running);
+        .clone();
+    let controls = build_menu(config.interval, config.language)?;
+    update_menu_labels(&controls, is_running, config.interval, config.language);
     let tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(controls.menu.clone()))
         .with_tooltip(APP_NAME)
@@ -62,14 +64,16 @@ pub(crate) fn create_tray_state(
     })
 }
 
-fn build_menu(current_interval: u64) -> AppResult<TrayControls> {
+fn build_menu(current_interval: u64, language: Language) -> AppResult<TrayControls> {
     let menu = Menu::new();
-    let capture_now = MenuItem::new("📷 截一张", true, None);
-    let start_pause = MenuItem::new("▶ 开始", true, None);
-    let interval_menu = Submenu::new(format!("⏱ 间隔 当前：{current_interval}s"), true);
-    let generate_video = MenuItem::new("🎬 生成今日视频", true, None);
-    let open_output_dir = MenuItem::new("📁 打开保存目录", true, None);
-    let quit = MenuItem::new("❌ 退出", true, None);
+    let text = Text::new(language);
+    let capture_now = MenuItem::new(text.capture_now(), true, None);
+    let start_pause = MenuItem::new(text.start(), true, None);
+    let interval_menu = Submenu::new(text.interval_menu(current_interval), true);
+    let generate_video = MenuItem::new(text.generate_today_video(), true, None);
+    let open_output_dir = MenuItem::new(text.open_output_dir(), true, None);
+    let language_menu = Submenu::new(text.language_menu(), true);
+    let quit = MenuItem::new(text.quit(), true, None);
 
     let interval_items = SUPPORTED_INTERVALS
         .iter()
@@ -86,11 +90,27 @@ fn build_menu(current_interval: u64) -> AppResult<TrayControls> {
         })
         .collect::<Vec<_>>();
 
+    let language_items = Language::ALL
+        .iter()
+        .map(|value| {
+            (
+                *value,
+                CheckMenuItem::new(value.menu_label(), true, *value == language, None),
+            )
+        })
+        .collect::<Vec<_>>();
+
     let interval_item_refs = interval_items
         .iter()
         .map(|(_, item)| item as &dyn IsMenuItem)
         .collect::<Vec<_>>();
     interval_menu.append_items(&interval_item_refs)?;
+
+    let language_item_refs = language_items
+        .iter()
+        .map(|(_, item)| item as &dyn IsMenuItem)
+        .collect::<Vec<_>>();
+    language_menu.append_items(&language_item_refs)?;
 
     menu.append_items(&[
         &capture_now as &dyn IsMenuItem,
@@ -101,6 +121,7 @@ fn build_menu(current_interval: u64) -> AppResult<TrayControls> {
         &PredefinedMenuItem::separator(),
         &generate_video,
         &open_output_dir,
+        &language_menu,
         &PredefinedMenuItem::separator(),
         &quit,
     ])?;
@@ -113,6 +134,8 @@ fn build_menu(current_interval: u64) -> AppResult<TrayControls> {
         interval_items,
         generate_video,
         open_output_dir,
+        language_menu,
+        language_items,
         quit,
     })
 }
@@ -132,6 +155,12 @@ pub(crate) fn command_for_event(event: &MenuEvent, controls: &TrayControls) -> O
         }
     }
 
+    for (language, item) in &controls.language_items {
+        if event.id == item.id() {
+            return Some(AppCommand::SetLanguage(*language));
+        }
+    }
+
     if event.id == controls.generate_video.id() {
         return Some(AppCommand::GenerateTodayVideo);
     }
@@ -147,19 +176,41 @@ pub(crate) fn command_for_event(event: &MenuEvent, controls: &TrayControls) -> O
     None
 }
 
-pub(crate) fn update_running_menu(controls: &TrayControls, is_running: bool) {
-    let text = if is_running {
-        "⏸ 暂停"
-    } else {
-        "▶ 开始"
-    };
-    controls.start_pause.set_text(text);
+pub(crate) fn update_menu_labels(
+    controls: &TrayControls,
+    is_running: bool,
+    interval: u64,
+    language: Language,
+) {
+    let text = Text::new(language);
+    controls.capture_now.set_text(text.capture_now());
+    update_running_menu(controls, is_running, language);
+    update_interval_menu(controls, interval, language);
+    controls
+        .generate_video
+        .set_text(text.generate_today_video());
+    controls.open_output_dir.set_text(text.open_output_dir());
+    controls.language_menu.set_text(text.language_menu());
+    for (value, item) in &controls.language_items {
+        item.set_checked(*value == language);
+    }
+    controls.quit.set_text(text.quit());
 }
 
-pub(crate) fn update_interval_menu(controls: &TrayControls, seconds: u64) {
+pub(crate) fn update_running_menu(controls: &TrayControls, is_running: bool, language: Language) {
+    let text = Text::new(language);
+    let label = if is_running {
+        text.pause()
+    } else {
+        text.start()
+    };
+    controls.start_pause.set_text(label);
+}
+
+pub(crate) fn update_interval_menu(controls: &TrayControls, seconds: u64, language: Language) {
     controls
         .interval_menu
-        .set_text(format!("⏱ 间隔 当前：{seconds}s"));
+        .set_text(Text::new(language).interval_menu(seconds));
     for (value, item) in &controls.interval_items {
         item.set_checked(*value == seconds);
     }
@@ -171,16 +222,13 @@ pub(crate) fn update_tooltip(state: &TrayState, tooltip: &str) -> AppResult<()> 
 }
 
 pub(crate) fn status_tooltip(
+    language: Language,
     is_running: bool,
     interval: u64,
     screenshot_count: u64,
     last_capture: Option<&str>,
 ) -> String {
-    let status = if is_running { "运行中" } else { "已暂停" };
-    let last_capture = last_capture.unwrap_or("暂无截图");
-    format!(
-        "{APP_NAME}\n状态: {status}\n间隔: {interval}s\n本次截图: {screenshot_count}\n最近: {last_capture}"
-    )
+    Text::new(language).status_tooltip(is_running, interval, screenshot_count, last_capture)
 }
 
 fn create_tray_icon() -> AppResult<Icon> {
@@ -226,11 +274,42 @@ mod tests {
 
     #[test]
     fn status_tooltip_includes_runtime_state() {
-        let tooltip = status_tooltip(true, 30, 2, Some("已保存 screen.png"));
+        let tooltip = status_tooltip(Language::ZhCn, true, 30, 2, Some("已保存 screen.png"));
 
         assert!(tooltip.contains("状态: 运行中"));
         assert!(tooltip.contains("间隔: 30s"));
         assert!(tooltip.contains("本次截图: 2"));
         assert!(tooltip.contains("最近: 已保存 screen.png"));
+    }
+
+    #[test]
+    fn status_tooltip_supports_english() {
+        let tooltip = status_tooltip(Language::En, false, 60, 3, Some("Saved screen.png"));
+
+        assert!(tooltip.contains("Status: Paused"));
+        assert!(tooltip.contains("Interval: 60s"));
+        assert!(tooltip.contains("Screenshots this session: 3"));
+        assert!(tooltip.contains("Latest: Saved screen.png"));
+    }
+
+    #[test]
+    fn command_for_event_detects_language_items() {
+        let controls = build_menu(30, Language::ZhCn).expect("build menu");
+        assert_eq!(controls.language_items.len(), Language::ALL.len());
+
+        let english_item = controls
+            .language_items
+            .iter()
+            .find(|(language, _)| *language == Language::En)
+            .map(|(_, item)| item)
+            .expect("english item");
+        let event = MenuEvent {
+            id: english_item.id().clone(),
+        };
+
+        assert_eq!(
+            command_for_event(&event, &controls),
+            Some(AppCommand::SetLanguage(Language::En))
+        );
     }
 }

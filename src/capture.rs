@@ -44,13 +44,13 @@ pub(crate) fn capture_once(
 
     let screen = Screen::all()
         .inspect_err(|_| {
-            platform::notify_screen_capture_failure(logger);
+            platform::notify_screen_capture_failure(logger, config.language);
         })?
         .into_iter()
         .next()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "没有可用屏幕"))?;
     let screenshot = screen.capture().inspect_err(|_| {
-        platform::notify_screen_capture_failure(logger);
+        platform::notify_screen_capture_failure(logger, config.language);
     })?;
     let width = screenshot.width();
     let height = screenshot.height();

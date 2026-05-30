@@ -1,6 +1,7 @@
 use crate::{
     capture::capture_once,
-    config::{cloned_config, load_config, save_current_config, Config},
+    config::{cloned_config, load_config, save_current_config, Config, Language},
+    i18n::Text,
     logging::Logger,
     paths::AppPaths,
     platform,
@@ -35,19 +36,24 @@ enum AppEvent {
     CaptureFailed { message: String, notify: bool },
 }
 
+enum LastCapture {
+    Saved(PathBuf),
+    Failed(String),
+}
+
 #[derive(Clone, Default)]
 struct ThreadRegistry {
     handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
 }
 
 impl ThreadRegistry {
-    fn spawn<F>(&self, task_name: &'static str, logger: Logger, task: F)
+    fn spawn<F>(&self, task_name: &'static str, language: Language, logger: Logger, task: F)
     where
         F: FnOnce() + Send + 'static,
     {
         let handle = thread::spawn(move || {
             if let Err(panic_payload) = panic::catch_unwind(AssertUnwindSafe(task)) {
-                report_thread_panic(task_name, panic_payload.as_ref(), &logger);
+                report_thread_panic(task_name, panic_payload.as_ref(), &logger, language);
             }
         });
         if let Ok(mut handles) = self.handles.lock() {
@@ -128,7 +134,7 @@ pub(crate) fn run() -> AppResult<()> {
     let mut tray_state: Option<TrayState> = None;
     let mut saved_on_quit = false;
     let mut screenshot_count = 0_u64;
-    let mut last_capture: Option<String> = None;
+    let mut last_capture: Option<LastCapture> = None;
 
     #[allow(deprecated)]
     event_loop.run(move |event, event_loop| {
@@ -150,7 +156,7 @@ pub(crate) fn run() -> AppResult<()> {
                                     state,
                                     &app_state,
                                     screenshot_count,
-                                    last_capture.as_deref(),
+                                    last_capture.as_ref(),
                                 );
                             }
                         }
@@ -169,13 +175,14 @@ pub(crate) fn run() -> AppResult<()> {
                             event,
                             &mut screenshot_count,
                             &mut last_capture,
+                            &app_state.config,
                             &app_state.logger,
                         );
                         update_tray_tooltip(
                             state,
                             &app_state,
                             screenshot_count,
-                            last_capture.as_deref(),
+                            last_capture.as_ref(),
                         );
                     }
 
@@ -192,7 +199,7 @@ pub(crate) fn run() -> AppResult<()> {
                                 state,
                                 &app_state,
                                 screenshot_count,
-                                last_capture.as_deref(),
+                                last_capture.as_ref(),
                             );
                         }
                     }
@@ -238,12 +245,23 @@ fn handle_app_command(
         AppCommand::ToggleRunning => {
             let next = !state.running.load(Ordering::SeqCst);
             state.running.store(next, Ordering::SeqCst);
-            tray::update_running_menu(controls, next);
+            let language = current_language(&state.config, &state.logger);
+            tray::update_running_menu(controls, next, language);
         }
         AppCommand::SetInterval(seconds) => {
             set_interval(
                 seconds,
                 controls,
+                &state.paths,
+                &state.config,
+                &state.logger,
+            );
+        }
+        AppCommand::SetLanguage(language) => {
+            set_language(
+                language,
+                controls,
+                state.running.load(Ordering::SeqCst),
                 &state.paths,
                 &state.config,
                 &state.logger,
@@ -258,9 +276,10 @@ fn handle_app_command(
         ),
         AppCommand::OpenOutputDir => {
             if let Err(error) = platform::open_path(&state.paths.root) {
+                let text = Text::new(current_language(&state.config, &state.logger));
                 state.logger.error(format!("打开保存目录失败: {error}"));
                 platform::notify(
-                    "打开保存目录失败",
+                    text.output_dir_failed_title(),
                     &format!("{error}"),
                     state.logger.clone(),
                 );
@@ -285,11 +304,32 @@ fn set_interval(
     match config.lock() {
         Ok(mut config_guard) => {
             config_guard.interval = seconds;
-            tray::update_interval_menu(controls, seconds);
+            let language = config_guard.language;
+            tray::update_interval_menu(controls, seconds, language);
             drop(config_guard);
             save_current_config(paths, config, logger);
         }
         Err(error) => logger.error(format!("更新间隔失败: {error}")),
+    }
+}
+
+fn set_language(
+    language: Language,
+    controls: &TrayControls,
+    is_running: bool,
+    paths: &AppPaths,
+    config: &Arc<Mutex<Config>>,
+    logger: &Logger,
+) {
+    match config.lock() {
+        Ok(mut config_guard) => {
+            config_guard.language = language;
+            let interval = config_guard.interval;
+            tray::update_menu_labels(controls, is_running, interval, language);
+            drop(config_guard);
+            save_current_config(paths, config, logger);
+        }
+        Err(error) => logger.error(format!("更新语言失败: {error}")),
     }
 }
 
@@ -300,8 +340,10 @@ fn capture_once_in_thread(
     workers: &ThreadRegistry,
     logger: Logger,
 ) {
+    let language = current_language(&config, &logger);
     workers.spawn(
         "手动截屏任务",
+        language,
         logger.clone(),
         move || match cloned_config(&config) {
             Ok(config) => match capture_once(&paths, &config, &logger) {
@@ -317,9 +359,10 @@ fn capture_once_in_thread(
                 }
             },
             Err(error) => {
+                let text = Text::new(Language::default());
                 logger.error(format!("读取配置失败: {error}"));
                 let _ = app_events.send(AppEvent::CaptureFailed {
-                    message: format!("读取配置失败: {error}"),
+                    message: text.config_read_failed(&error),
                     notify: true,
                 });
             }
@@ -338,15 +381,22 @@ fn generate_today_video_in_thread(
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
     {
+        let text = Text::new(current_language(&config, &logger));
         logger.warn("已有视频生成任务正在运行，跳过本次请求");
-        platform::notify("视频生成中", "已有视频生成任务正在运行。", logger);
+        platform::notify(
+            text.video_generating_title(),
+            text.video_generating_body(),
+            logger,
+        );
         return;
     }
 
-    workers.spawn("生成视频任务", logger.clone(), move || {
+    let language = current_language(&config, &logger);
+    workers.spawn("生成视频任务", language, logger.clone(), move || {
         let _generating_video_guard = AtomicFlagGuard::new(generating_video);
         match cloned_config(&config) {
             Ok(config) => {
+                let text = Text::new(config.language);
                 match generate_today_video(
                     &paths,
                     config.fps,
@@ -356,22 +406,27 @@ fn generate_today_video_in_thread(
                 ) {
                     Ok(output) => {
                         platform::notify(
-                            "视频生成成功",
-                            &format!("已保存到: {}", output.display()),
+                            text.video_success_title(),
+                            &text.saved_to(&output),
                             logger.clone(),
                         );
                     }
                     Err(error) => {
                         logger.error(format!("生成今日视频失败: {error}"));
-                        platform::notify("视频生成失败", &format!("{error}"), logger.clone());
+                        platform::notify(
+                            text.video_failed_title(),
+                            &format!("{error}"),
+                            logger.clone(),
+                        );
                     }
                 }
             }
             Err(error) => {
+                let text = Text::new(Language::default());
                 logger.error(format!("读取配置失败: {error}"));
                 platform::notify(
-                    "视频生成失败",
-                    &format!("读取配置失败: {error}"),
+                    text.video_failed_title(),
+                    &text.config_read_failed(&error),
                     logger.clone(),
                 );
             }
@@ -389,10 +444,16 @@ fn spawn_capture_loop(
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let panic_logger = logger.clone();
+        let panic_config = Arc::clone(&config);
         if let Err(panic_payload) = panic::catch_unwind(AssertUnwindSafe(move || {
             run_capture_loop(paths, running, shutdown, config, app_events, logger);
         })) {
-            report_thread_panic("定时截屏线程", panic_payload.as_ref(), &panic_logger);
+            report_thread_panic(
+                "定时截屏线程",
+                panic_payload.as_ref(),
+                &panic_logger,
+                current_language(&panic_config, &panic_logger),
+            );
         }
     })
 }
@@ -460,13 +521,22 @@ fn run_capture_loop(
     }
 }
 
-fn report_thread_panic(task_name: &str, panic_payload: &(dyn Any + Send), logger: &Logger) {
+fn report_thread_panic(
+    task_name: &str,
+    panic_payload: &(dyn Any + Send),
+    logger: &Logger,
+    language: Language,
+) {
     let message = format!(
         "{task_name} panic: {}",
         panic_payload_message(panic_payload)
     );
     logger.error(&message);
-    platform::notify("后台任务异常退出", &message, logger.clone());
+    platform::notify(
+        Text::new(language).background_task_failed_title(),
+        &message,
+        logger.clone(),
+    );
 }
 
 fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
@@ -482,25 +552,28 @@ fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
 fn handle_app_event(
     event: AppEvent,
     screenshot_count: &mut u64,
-    last_capture: &mut Option<String>,
+    last_capture: &mut Option<LastCapture>,
+    config: &Arc<Mutex<Config>>,
     logger: &Logger,
 ) {
     match event {
         AppEvent::CaptureSucceeded { path, notify } => {
             *screenshot_count += 1;
-            *last_capture = Some(format!("已保存 {}", path.display()));
+            *last_capture = Some(LastCapture::Saved(path.clone()));
             if notify {
+                let text = Text::new(current_language(config, logger));
                 platform::notify(
-                    "截图成功",
-                    &format!("已保存到: {}", path.display()),
+                    text.capture_success_title(),
+                    &text.saved_to(&path),
                     logger.clone(),
                 );
             }
         }
         AppEvent::CaptureFailed { message, notify } => {
-            *last_capture = Some(format!("失败: {message}"));
+            *last_capture = Some(LastCapture::Failed(message.clone()));
             if notify {
-                platform::notify("截图失败", &message, logger.clone());
+                let text = Text::new(current_language(config, logger));
+                platform::notify(text.capture_failed_title(), &message, logger.clone());
             }
         }
     }
@@ -510,25 +583,40 @@ fn update_tray_tooltip(
     tray_state: &TrayState,
     app_state: &AppState,
     screenshot_count: u64,
-    last_capture: Option<&str>,
+    last_capture: Option<&LastCapture>,
 ) {
-    let interval = cloned_config(&app_state.config)
-        .map(|config| config.interval)
-        .unwrap_or_else(|error| {
-            app_state.logger.error(format!("读取配置失败: {error}"));
-            Config::default().interval
-        });
+    let config = cloned_config(&app_state.config).unwrap_or_else(|error| {
+        app_state.logger.error(format!("读取配置失败: {error}"));
+        Config::default()
+    });
+    let text = Text::new(config.language);
+    let last_capture = last_capture.map(|capture| match capture {
+        LastCapture::Saved(path) => text.saved_capture(path),
+        LastCapture::Failed(message) => text.failed_capture(message),
+    });
     let tooltip = tray::status_tooltip(
+        config.language,
         app_state.running.load(Ordering::SeqCst),
-        interval,
+        config.interval,
         screenshot_count,
-        last_capture,
+        last_capture.as_deref(),
     );
     if let Err(error) = tray::update_tooltip(tray_state, &tooltip) {
         app_state
             .logger
             .error(format!("更新托盘状态提示失败: {error}"));
     }
+}
+
+fn current_language(config: &Arc<Mutex<Config>>, logger: &Logger) -> Language {
+    current_config_or_default(config, logger).language
+}
+
+fn current_config_or_default(config: &Arc<Mutex<Config>>, logger: &Logger) -> Config {
+    cloned_config(config).unwrap_or_else(|error| {
+        logger.error(format!("读取配置失败: {error}"));
+        Config::default()
+    })
 }
 
 #[cfg(test)]

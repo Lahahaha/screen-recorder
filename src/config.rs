@@ -19,6 +19,7 @@ pub(crate) struct Config {
     pub(crate) dedup: bool,
     pub(crate) auto_start: bool,
     pub(crate) video_codec: VideoCodec,
+    pub(crate) language: Language,
 }
 
 impl Default for Config {
@@ -31,7 +32,69 @@ impl Default for Config {
             dedup: false,
             auto_start: false,
             video_codec: VideoCodec::H264,
+            language: Language::ZhCn,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum Language {
+    #[default]
+    ZhCn,
+    En,
+}
+
+impl Language {
+    pub(crate) const ALL: &'static [Language] = &[Language::ZhCn, Language::En];
+
+    pub(crate) fn from_config(value: &str) -> Self {
+        let value = value.trim().to_ascii_lowercase();
+        for language in Self::ALL {
+            if language
+                .config_aliases()
+                .iter()
+                .any(|alias| *alias == value)
+            {
+                return *language;
+            }
+        }
+        Self::default()
+    }
+
+    pub(crate) fn config_value(self) -> &'static str {
+        self.config_aliases()[0]
+    }
+
+    pub(crate) fn config_aliases(self) -> &'static [&'static str] {
+        match self {
+            Self::ZhCn => &["zh-CN", "zh", "zh-cn", "zh_cn", "cn"],
+            Self::En => &["en", "en-US", "en-us", "en_us"],
+        }
+    }
+
+    pub(crate) fn menu_label(self) -> &'static str {
+        match self {
+            Self::ZhCn => "中文",
+            Self::En => "English",
+        }
+    }
+}
+
+impl Serialize for Language {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.config_value())
+    }
+}
+
+impl<'de> Deserialize<'de> for Language {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(|value| Self::from_config(&value))
     }
 }
 
@@ -239,6 +302,7 @@ mod tests {
         assert!(!config.dedup);
         assert!(!config.auto_start);
         assert_eq!(config.video_codec, VideoCodec::H264);
+        assert_eq!(config.language, Language::ZhCn);
     }
 
     #[test]
@@ -259,6 +323,32 @@ mod tests {
         assert_eq!(VideoCodec::from_config("libx265"), VideoCodec::H265);
         assert_eq!(VideoCodec::from_config("h264"), VideoCodec::H264);
         assert_eq!(VideoCodec::from_config("unknown"), VideoCodec::H264);
+    }
+
+    #[test]
+    fn language_parses_known_values() {
+        assert_eq!(Language::from_config("zh-CN"), Language::ZhCn);
+        assert_eq!(Language::from_config("zh"), Language::ZhCn);
+        assert_eq!(Language::from_config("en"), Language::En);
+        assert_eq!(Language::from_config("unknown"), Language::ZhCn);
+    }
+
+    #[test]
+    fn language_metadata_is_complete() {
+        for language in Language::ALL {
+            assert!(!language.config_value().is_empty());
+            assert!(!language.menu_label().is_empty());
+            assert!(language.config_aliases().contains(&language.config_value()));
+        }
+    }
+
+    #[test]
+    fn language_config_values_are_unique() {
+        for (index, language) in Language::ALL.iter().enumerate() {
+            for other in &Language::ALL[index + 1..] {
+                assert_ne!(language.config_value(), other.config_value());
+            }
+        }
     }
 
     #[test]
