@@ -700,21 +700,20 @@ impl eframe::App for HistoryApp {
                             (ui.available_width() - source_scroll_style.allocated_width()).max(1.0),
                         );
                         show_source_header(ui, &text, table_layout, palette);
+                        let source_card_context = SourceCardContext {
+                            layout: table_layout,
+                            mode: self.generation_mode,
+                            language: self.config.language,
+                            enabled: !self.generating,
+                            text: &text,
+                            palette,
+                        };
                         ui.add_space(SOURCE_ROW_GAP);
                         ui.scope(|ui| {
                             ui.style_mut().spacing.scroll = source_scroll_style;
                             egui::ScrollArea::vertical().show(ui, |ui| {
                                 for source in &mut self.sources {
-                                    let changed = show_source_card(
-                                        ui,
-                                        source,
-                                        table_layout,
-                                        self.generation_mode,
-                                        self.config.language,
-                                        !self.generating,
-                                        &text,
-                                        palette,
-                                    );
+                                    let changed = show_source_card(ui, source, source_card_context);
                                     selection_changed |= changed;
                                     ui.add_space(SOURCE_ROW_GAP);
                                 }
@@ -1096,6 +1095,16 @@ struct SourceColumnRects {
     status: egui::Rect,
 }
 
+#[derive(Clone, Copy)]
+struct SourceCardContext<'a> {
+    layout: SourceTableLayout,
+    mode: VideoGenerationMode,
+    language: Language,
+    enabled: bool,
+    text: &'a Text,
+    palette: HistoryPalette,
+}
+
 fn source_scroll_style() -> egui::style::ScrollStyle {
     let mut style = egui::style::ScrollStyle::solid();
     style.bar_width = SOURCE_SCROLLBAR_WIDTH;
@@ -1219,32 +1228,27 @@ fn show_header_label(
 fn show_source_card(
     ui: &mut egui::Ui,
     source: &mut VideoSource,
-    layout: SourceTableLayout,
-    mode: VideoGenerationMode,
-    language: Language,
-    enabled: bool,
-    text: &Text,
-    palette: HistoryPalette,
+    context: SourceCardContext<'_>,
 ) -> bool {
     let before = source.selected;
-    let can_select = enabled && !source.available_generation_modes().is_empty();
+    let can_select = context.enabled && !source.available_generation_modes().is_empty();
     let fill = if source.selected {
-        palette.card_selected
+        context.palette.card_selected
     } else {
-        palette.card
+        context.palette.card
     };
     let stroke = if source.selected {
-        egui::Stroke::new(1.4, palette.selected_border)
+        egui::Stroke::new(1.4, context.palette.selected_border)
     } else {
-        egui::Stroke::new(1.0, palette.border)
+        egui::Stroke::new(1.0, context.palette.border)
     };
     let (row_rect, _) = ui.allocate_exact_size(
-        egui::vec2(layout.row_width, SOURCE_ROW_HEIGHT),
+        egui::vec2(context.layout.row_width, SOURCE_ROW_HEIGHT),
         egui::Sense::hover(),
     );
     ui.painter()
         .rect(row_rect, egui::Rounding::same(12.0), fill, stroke);
-    let columns = layout.column_rects(row_rect);
+    let columns = context.layout.column_rects(row_rect);
 
     let checkbox_rect = egui::Rect::from_center_size(
         egui::pos2(columns.leading.left() + 22.0, row_rect.center().y),
@@ -1257,7 +1261,7 @@ fn show_source_card(
         egui::pos2(columns.leading.left() + 58.0, row_rect.center().y),
         egui::vec2(34.0, 28.0),
     );
-    paint_folder_icon(ui, icon_rect, palette);
+    paint_folder_icon(ui, icon_rect, context.palette);
 
     let name_rect = egui::Rect::from_min_max(
         egui::pos2(columns.name.left(), row_rect.top() + 10.0),
@@ -1268,7 +1272,7 @@ fn show_source_card(
         egui::Label::new(
             egui::RichText::new(&source.label)
                 .strong()
-                .color(palette.text),
+                .color(context.palette.text),
         )
         .truncate(),
     )
@@ -1280,32 +1284,37 @@ fn show_source_card(
     ui.put(
         subtitle_rect,
         egui::Label::new(
-            egui::RichText::new(source_origin_label(language, source.external))
+            egui::RichText::new(source_origin_label(context.language, source.external))
                 .small()
-                .color(palette.muted),
+                .color(context.palette.muted),
         )
         .truncate(),
     );
 
-    paint_centered_text(ui, columns.images, &source.image_count.to_string(), palette);
-    let video_label = if source.output_path_for_mode(mode).exists() {
-        text.exists()
+    paint_centered_text(
+        ui,
+        columns.images,
+        &source.image_count.to_string(),
+        context.palette,
+    );
+    let video_label = if source.output_path_for_mode(context.mode).exists() {
+        context.text.exists()
     } else {
-        text.missing()
+        context.text.missing()
     };
     paint_chip(
         ui,
         columns.video,
         video_label,
-        palette.primary_soft,
-        palette.primary,
+        context.palette.primary_soft,
+        context.palette.primary,
     );
     paint_chip(
         ui,
         columns.status,
-        &source.status_label(language),
-        palette.success_soft,
-        palette.success,
+        &source.status_label(context.language),
+        context.palette.success_soft,
+        context.palette.success,
     );
 
     let changed = source.selected != before;
