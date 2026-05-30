@@ -6,6 +6,7 @@ use crate::{
     paths::AppPaths,
     platform,
     screenshot_naming::{parse_screenshot_file_name, screenshot_format_for_path, ScreenshotName},
+    single_instance::{InstanceGuard, InstanceKind},
     video::{
         generate_video_from_dir_with_mode_and_control, VideoGenerationCancelToken,
         VideoGenerationMode, VideoGenerationOptions, VideoGenerationProgress,
@@ -27,6 +28,10 @@ use std::{
 pub(crate) fn run() -> AppResult<()> {
     let paths = AppPaths::new()?;
     let logger = Logger::new(&paths)?;
+    let Some(_instance_guard) = InstanceGuard::acquire(&paths, InstanceKind::History)? else {
+        logger.info("历史视频窗口已在运行，忽略本次启动");
+        return Ok(());
+    };
     let config = load_config(&paths, &logger)?;
     let language = config.language;
     let title = Text::new(language).history_videos();
@@ -41,6 +46,7 @@ pub(crate) fn run() -> AppResult<()> {
         title,
         options,
         Box::new(move |cc| {
+            cc.egui_ctx.set_theme(egui::ThemePreference::System);
             install_history_fonts(&cc.egui_ctx, &logger);
             Ok(Box::new(HistoryApp::new(paths, config, logger)))
         }),
@@ -488,11 +494,12 @@ impl eframe::App for HistoryApp {
             && self.sources.iter().any(|source| {
                 source.selected && source.can_generate_for_mode(self.generation_mode)
             });
+        let palette = HistoryPalette::from_theme(ctx.theme());
 
         egui::TopBottomPanel::top("history_toolbar")
             .frame(
                 egui::Frame::none()
-                    .fill(history_bg())
+                    .fill(palette.bg)
                     .inner_margin(egui::Margin::symmetric(24.0, 0.0)),
             )
             .show(ctx, |ui| {
@@ -502,12 +509,12 @@ impl eframe::App for HistoryApp {
                         ui.heading(
                             egui::RichText::new(text.history_videos())
                                 .size(24.0)
-                                .color(history_text()),
+                                .color(palette.text),
                         );
                         ui.add_space(3.0);
                         ui.label(
                             egui::RichText::new(history_subtitle(self.config.language))
-                                .color(history_muted()),
+                                .color(palette.muted),
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -547,8 +554,8 @@ impl eframe::App for HistoryApp {
 
                 ui.add_space(14.0);
                 egui::Frame::none()
-                    .fill(history_card())
-                    .stroke(egui::Stroke::new(1.0, history_border()))
+                    .fill(palette.card)
+                    .stroke(egui::Stroke::new(1.0, palette.border))
                     .rounding(egui::Rounding::same(12.0))
                     .inner_margin(egui::Margin::symmetric(18.0, 14.0))
                     .show(ui, |ui| {
@@ -561,7 +568,7 @@ impl eframe::App for HistoryApp {
                                     egui::Label::new(
                                         egui::RichText::new(text.generation_mode())
                                             .strong()
-                                            .color(history_muted()),
+                                            .color(palette.muted),
                                     )
                                     .halign(egui::Align::Min),
                                 );
@@ -575,7 +582,7 @@ impl eframe::App for HistoryApp {
                                     ui.add_sized(
                                         [112.0, HISTORY_MODE_ROW_HEIGHT],
                                         egui::Label::new(
-                                            egui::RichText::new(label).color(history_muted()),
+                                            egui::RichText::new(label).color(palette.muted),
                                         )
                                         .halign(egui::Align::Center),
                                     );
@@ -586,6 +593,7 @@ impl eframe::App for HistoryApp {
                                             &generation_mode_label(&text, *mode),
                                             *mode == self.generation_mode,
                                             !self.generating,
+                                            palette,
                                         )
                                         .clicked()
                                         {
@@ -599,6 +607,7 @@ impl eframe::App for HistoryApp {
                                     ui,
                                     text.selected_count(selected_count),
                                     total_sources_label(self.config.language, self.sources.len()),
+                                    palette,
                                 );
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
@@ -612,7 +621,7 @@ impl eframe::App for HistoryApp {
                                                     .strong()
                                                     .color(egui::Color32::WHITE),
                                             )
-                                            .fill(history_blue()),
+                                            .fill(palette.primary),
                                         )
                                         .clicked()
                                         {
@@ -626,151 +635,190 @@ impl eframe::App for HistoryApp {
                 ui.add_space(12.0);
             });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(ready_label(self.config.language)).color(history_muted()),
-                );
-                if !self.status_message.is_empty() {
-                    ui.separator();
-                    ui.label(egui::RichText::new(&self.status_message).color(history_muted()));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        egui::TopBottomPanel::bottom("status")
+            .frame(egui::Frame::none().fill(palette.bg))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(text.selected_count(selected_count))
-                            .color(history_muted()),
+                        egui::RichText::new(ready_label(self.config.language)).color(palette.muted),
                     );
+                    if !self.status_message.is_empty() {
+                        ui.separator();
+                        ui.label(egui::RichText::new(&self.status_message).color(palette.muted));
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(text.selected_count(selected_count))
+                                .color(palette.muted),
+                        );
+                    });
                 });
             });
-        });
 
         egui::SidePanel::right("details")
             .resizable(true)
             .default_width(340.0)
-            .frame(egui::Frame::none().fill(history_bg()))
+            .frame(egui::Frame::none().fill(palette.bg))
             .show(ctx, |ui| {
                 ui.add_space(8.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     egui::Frame::none()
-                        .fill(history_card())
-                        .stroke(egui::Stroke::new(1.0, history_border()))
+                        .fill(palette.card)
+                        .stroke(egui::Stroke::new(1.0, palette.border))
                         .rounding(egui::Rounding::same(12.0))
                         .inner_margin(egui::Margin::same(18.0))
                         .show(ui, |ui| {
-                            show_details_panel(ui, self, &text, selected_count);
+                            show_details_panel(ui, self, &text, selected_count, palette);
                         });
                     ui.add_space(32.0);
                 });
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(8.0);
-            let mut selection_changed = false;
-            egui::Frame::none()
-                .fill(history_card())
-                .stroke(egui::Stroke::new(1.0, history_border()))
-                .rounding(egui::Rounding::same(12.0))
-                .inner_margin(egui::Margin::same(16.0))
-                .show(ui, |ui| {
-                    ui.heading(
-                        egui::RichText::new(folder_list_title(self.config.language))
-                            .size(22.0)
-                            .color(history_text()),
-                    );
-                    ui.label(
-                        egui::RichText::new(folder_list_hint(self.config.language))
-                            .color(history_muted()),
-                    );
-                    ui.add_space(16.0);
-                    let source_scroll_style = source_scroll_style();
-                    let table_layout = SourceTableLayout::new(
-                        (ui.available_width() - source_scroll_style.allocated_width()).max(1.0),
-                    );
-                    show_source_header(ui, &text, table_layout);
-                    ui.add_space(SOURCE_ROW_GAP);
-                    ui.scope(|ui| {
-                        ui.style_mut().spacing.scroll = source_scroll_style;
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for source in &mut self.sources {
-                                let changed = show_source_card(
-                                    ui,
-                                    source,
-                                    table_layout,
-                                    self.generation_mode,
-                                    self.config.language,
-                                    !self.generating,
-                                    &text,
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(palette.bg))
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                let mut selection_changed = false;
+                egui::Frame::none()
+                    .fill(palette.card)
+                    .stroke(egui::Stroke::new(1.0, palette.border))
+                    .rounding(egui::Rounding::same(12.0))
+                    .inner_margin(egui::Margin::same(16.0))
+                    .show(ui, |ui| {
+                        ui.heading(
+                            egui::RichText::new(folder_list_title(self.config.language))
+                                .size(22.0)
+                                .color(palette.text),
+                        );
+                        ui.label(
+                            egui::RichText::new(folder_list_hint(self.config.language))
+                                .color(palette.muted),
+                        );
+                        ui.add_space(16.0);
+                        let source_scroll_style = source_scroll_style();
+                        let table_layout = SourceTableLayout::new(
+                            (ui.available_width() - source_scroll_style.allocated_width()).max(1.0),
+                        );
+                        show_source_header(ui, &text, table_layout, palette);
+                        ui.add_space(SOURCE_ROW_GAP);
+                        ui.scope(|ui| {
+                            ui.style_mut().spacing.scroll = source_scroll_style;
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                for source in &mut self.sources {
+                                    let changed = show_source_card(
+                                        ui,
+                                        source,
+                                        table_layout,
+                                        self.generation_mode,
+                                        self.config.language,
+                                        !self.generating,
+                                        &text,
+                                        palette,
+                                    );
+                                    selection_changed |= changed;
+                                    ui.add_space(SOURCE_ROW_GAP);
+                                }
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(loaded_sources_label(
+                                        self.config.language,
+                                        self.sources.len(),
+                                    ))
+                                    .color(palette.muted),
                                 );
-                                selection_changed |= changed;
-                                ui.add_space(SOURCE_ROW_GAP);
-                            }
-                            ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new(loaded_sources_label(
-                                    self.config.language,
-                                    self.sources.len(),
-                                ))
-                                .color(history_muted()),
-                            );
-                            ui.add_space(28.0);
+                                ui.add_space(28.0);
+                            });
                         });
                     });
-                });
-            if selection_changed {
-                self.reconcile_generation_mode_with_selection();
-                ctx.request_repaint();
-            }
-        });
+                if selection_changed {
+                    self.reconcile_generation_mode_with_selection();
+                    ctx.request_repaint();
+                }
+            });
 
         self.show_generation_dialog(ctx);
     }
 }
 
-fn history_bg() -> egui::Color32 {
-    egui::Color32::from_rgb(247, 248, 250)
+#[derive(Clone, Copy)]
+struct HistoryPalette {
+    bg: egui::Color32,
+    card: egui::Color32,
+    card_selected: egui::Color32,
+    border: egui::Color32,
+    primary: egui::Color32,
+    primary_soft: egui::Color32,
+    success: egui::Color32,
+    success_soft: egui::Color32,
+    text: egui::Color32,
+    muted: egui::Color32,
+    mode_idle: egui::Color32,
+    inset: egui::Color32,
+    inset_alt: egui::Color32,
+    footer: egui::Color32,
+    header: egui::Color32,
+    selected_border: egui::Color32,
+    folder_tab: egui::Color32,
+    folder_body: egui::Color32,
 }
 
-fn history_card() -> egui::Color32 {
-    egui::Color32::WHITE
-}
-
-fn history_card_selected() -> egui::Color32 {
-    egui::Color32::from_rgb(244, 248, 255)
-}
-
-fn history_border() -> egui::Color32 {
-    egui::Color32::from_rgb(218, 222, 228)
-}
-
-fn history_blue() -> egui::Color32 {
-    egui::Color32::from_rgb(38, 111, 255)
-}
-
-fn history_blue_soft() -> egui::Color32 {
-    egui::Color32::from_rgb(232, 240, 255)
-}
-
-fn history_green() -> egui::Color32 {
-    egui::Color32::from_rgb(28, 155, 93)
-}
-
-fn history_green_soft() -> egui::Color32 {
-    egui::Color32::from_rgb(222, 246, 234)
-}
-
-fn history_text() -> egui::Color32 {
-    egui::Color32::from_rgb(32, 38, 46)
-}
-
-fn history_muted() -> egui::Color32 {
-    egui::Color32::from_rgb(101, 112, 126)
+impl HistoryPalette {
+    fn from_theme(theme: egui::Theme) -> Self {
+        match theme {
+            egui::Theme::Light => Self {
+                bg: egui::Color32::from_rgb(247, 248, 250),
+                card: egui::Color32::WHITE,
+                card_selected: egui::Color32::from_rgb(244, 248, 255),
+                border: egui::Color32::from_rgb(218, 222, 228),
+                primary: egui::Color32::from_rgb(38, 111, 255),
+                primary_soft: egui::Color32::from_rgb(232, 240, 255),
+                success: egui::Color32::from_rgb(28, 155, 93),
+                success_soft: egui::Color32::from_rgb(222, 246, 234),
+                text: egui::Color32::from_rgb(32, 38, 46),
+                muted: egui::Color32::from_rgb(101, 112, 126),
+                mode_idle: egui::Color32::from_rgb(239, 242, 246),
+                inset: egui::Color32::from_rgb(248, 250, 252),
+                inset_alt: egui::Color32::from_rgb(250, 251, 253),
+                footer: egui::Color32::from_rgb(245, 247, 250),
+                header: egui::Color32::from_rgb(248, 250, 252),
+                selected_border: egui::Color32::from_rgb(172, 196, 255),
+                folder_tab: egui::Color32::from_rgb(255, 221, 130),
+                folder_body: egui::Color32::from_rgb(255, 205, 96),
+            },
+            egui::Theme::Dark => Self {
+                bg: egui::Color32::from_rgb(17, 19, 24),
+                card: egui::Color32::from_rgb(26, 29, 36),
+                card_selected: egui::Color32::from_rgb(28, 39, 61),
+                border: egui::Color32::from_rgb(60, 66, 78),
+                primary: egui::Color32::from_rgb(91, 146, 255),
+                primary_soft: egui::Color32::from_rgb(30, 51, 85),
+                success: egui::Color32::from_rgb(82, 204, 143),
+                success_soft: egui::Color32::from_rgb(24, 67, 48),
+                text: egui::Color32::from_rgb(235, 239, 245),
+                muted: egui::Color32::from_rgb(157, 166, 179),
+                mode_idle: egui::Color32::from_rgb(37, 42, 51),
+                inset: egui::Color32::from_rgb(32, 36, 44),
+                inset_alt: egui::Color32::from_rgb(35, 39, 48),
+                footer: egui::Color32::from_rgb(29, 33, 41),
+                header: egui::Color32::from_rgb(34, 38, 47),
+                selected_border: egui::Color32::from_rgb(93, 136, 221),
+                folder_tab: egui::Color32::from_rgb(207, 161, 70),
+                folder_body: egui::Color32::from_rgb(181, 128, 49),
+            },
+        }
+    }
 }
 
 const HISTORY_MODE_ROW_HEIGHT: f32 = 44.0;
 const HISTORY_MODE_SUMMARY_WIDTH: f32 = 150.0;
 const HISTORY_MODE_SUMMARY_CONTENT_HEIGHT: f32 = 36.0;
 
-fn show_history_mode_summary(ui: &mut egui::Ui, selected_label: String, total_label: String) {
+fn show_history_mode_summary(
+    ui: &mut egui::Ui,
+    selected_label: String,
+    total_label: String,
+    palette: HistoryPalette,
+) {
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(HISTORY_MODE_SUMMARY_WIDTH, HISTORY_MODE_ROW_HEIGHT),
         egui::Sense::hover(),
@@ -788,7 +836,7 @@ fn show_history_mode_summary(ui: &mut egui::Ui, selected_label: String, total_la
         egui::Label::new(
             egui::RichText::new(&selected_label)
                 .strong()
-                .color(history_text()),
+                .color(palette.text),
         )
         .truncate()
         .halign(egui::Align::Min),
@@ -799,7 +847,7 @@ fn show_history_mode_summary(ui: &mut egui::Ui, selected_label: String, total_la
         egui::Label::new(
             egui::RichText::new(&total_label)
                 .small()
-                .color(history_muted()),
+                .color(palette.muted),
         )
         .truncate()
         .halign(egui::Align::Min),
@@ -808,21 +856,27 @@ fn show_history_mode_summary(ui: &mut egui::Ui, selected_label: String, total_la
     ui.advance_cursor_after_rect(rect);
 }
 
-fn mode_button(ui: &mut egui::Ui, label: &str, selected: bool, enabled: bool) -> egui::Response {
+fn mode_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: bool,
+    enabled: bool,
+    palette: HistoryPalette,
+) -> egui::Response {
     let fill = if selected {
-        egui::Color32::WHITE
+        palette.card
     } else {
-        egui::Color32::from_rgb(239, 242, 246)
+        palette.mode_idle
     };
     let stroke = if selected {
-        egui::Stroke::new(1.5, history_blue())
+        egui::Stroke::new(1.5, palette.primary)
     } else {
         egui::Stroke::NONE
     };
     let text_color = if selected {
-        history_blue()
+        palette.primary
     } else {
-        history_muted()
+        palette.muted
     };
     add_enabled_sized(
         ui,
@@ -844,16 +898,22 @@ fn add_enabled_sized(
         .inner
 }
 
-fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, selected_count: usize) {
+fn show_details_panel(
+    ui: &mut egui::Ui,
+    app: &mut HistoryApp,
+    text: &Text,
+    selected_count: usize,
+    palette: HistoryPalette,
+) {
     ui.heading(
         egui::RichText::new(text.selected_folders())
             .size(22.0)
-            .color(history_text()),
+            .color(palette.text),
     );
     ui.add_space(14.0);
     egui::Frame::none()
-        .fill(egui::Color32::from_rgb(248, 250, 252))
-        .stroke(egui::Stroke::new(1.0, history_border()))
+        .fill(palette.inset)
+        .stroke(egui::Stroke::new(1.0, palette.border))
         .rounding(egui::Rounding::same(12.0))
         .inner_margin(egui::Margin::same(14.0))
         .show(ui, |ui| {
@@ -862,24 +922,22 @@ fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, sele
                     egui::RichText::new(selected_count.to_string())
                         .size(26.0)
                         .strong()
-                        .color(history_blue()),
+                        .color(palette.primary),
                 );
                 ui.label(
                     egui::RichText::new(selected_summary_label(app.config.language))
                         .strong()
-                        .color(history_text()),
+                        .color(palette.text),
                 );
             });
-            ui.label(
-                egui::RichText::new(selection_hint(app.config.language)).color(history_muted()),
-            );
+            ui.label(egui::RichText::new(selection_hint(app.config.language)).color(palette.muted));
         });
 
     ui.add_space(18.0);
     ui.label(
         egui::RichText::new(text.selected_folders())
             .strong()
-            .color(history_text()),
+            .color(palette.text),
     );
     ui.add_space(8.0);
     let selected = app
@@ -888,17 +946,17 @@ fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, sele
         .filter(|source| source.selected)
         .collect::<Vec<_>>();
     if selected.is_empty() {
-        ui.label(egui::RichText::new(text.no_selection()).color(history_muted()));
+        ui.label(egui::RichText::new(text.no_selection()).color(palette.muted));
     } else {
         for source in selected.iter().take(4) {
             egui::Frame::none()
-                .fill(egui::Color32::from_rgb(250, 251, 253))
-                .stroke(egui::Stroke::new(1.0, history_border()))
+                .fill(palette.inset_alt)
+                .stroke(egui::Stroke::new(1.0, palette.border))
                 .rounding(egui::Rounding::same(8.0))
                 .inner_margin(egui::Margin::symmetric(12.0, 8.0))
                 .show(ui, |ui| {
                     ui.add(
-                        egui::Label::new(egui::RichText::new(&source.label).color(history_text()))
+                        egui::Label::new(egui::RichText::new(&source.label).color(palette.text))
                             .truncate(),
                     )
                     .on_hover_text(&source.label);
@@ -908,10 +966,8 @@ fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, sele
                         source.output_path_for_mode(app.generation_mode).display()
                     );
                     ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&output).small().color(history_muted()),
-                        )
-                        .truncate(),
+                        egui::Label::new(egui::RichText::new(&output).small().color(palette.muted))
+                            .truncate(),
                     )
                     .on_hover_text(output);
                 });
@@ -920,7 +976,7 @@ fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, sele
         if selected.len() > 4 {
             ui.label(
                 egui::RichText::new(more_selected_label(app.config.language, selected.len() - 4))
-                    .color(history_muted()),
+                    .color(palette.muted),
             );
         }
     }
@@ -929,12 +985,12 @@ fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, sele
     ui.label(
         egui::RichText::new(generation_params_label(app.config.language))
             .strong()
-            .color(history_text()),
+            .color(palette.text),
     );
     ui.add_space(8.0);
     egui::Frame::none()
-        .fill(egui::Color32::from_rgb(248, 250, 252))
-        .stroke(egui::Stroke::new(1.0, history_border()))
+        .fill(palette.inset)
+        .stroke(egui::Stroke::new(1.0, palette.border))
         .rounding(egui::Rounding::same(12.0))
         .inner_margin(egui::Margin::same(14.0))
         .show(ui, |ui| {
@@ -942,26 +998,27 @@ fn show_details_panel(ui: &mut egui::Ui, app: &mut HistoryApp, text: &Text, sele
                 ui,
                 text.generation_mode(),
                 &generation_mode_label(text, app.generation_mode),
+                palette,
             );
-            detail_row(ui, "FPS", &app.config.fps.to_string());
-            detail_row(ui, "Codec", app.config.video_codec.config_value());
+            detail_row(ui, "FPS", &app.config.fps.to_string(), palette);
+            detail_row(ui, "Codec", app.config.video_codec.config_value(), palette);
         });
 
     ui.add_space(18.0);
-    show_output_location_footer(ui, app);
+    show_output_location_footer(ui, app, palette);
     ui.add_space(14.0);
 }
 
-fn show_output_location_footer(ui: &mut egui::Ui, app: &mut HistoryApp) {
+fn show_output_location_footer(ui: &mut egui::Ui, app: &mut HistoryApp, palette: HistoryPalette) {
     ui.label(
         egui::RichText::new(output_location_label(app.config.language))
             .strong()
-            .color(history_text()),
+            .color(palette.text),
     );
     ui.add_space(8.0);
     egui::Frame::none()
-        .fill(egui::Color32::from_rgb(245, 247, 250))
-        .stroke(egui::Stroke::new(1.0, history_border()))
+        .fill(palette.footer)
+        .stroke(egui::Stroke::new(1.0, palette.border))
         .rounding(egui::Rounding::same(12.0))
         .inner_margin(egui::Margin::symmetric(12.0, 10.0))
         .show(ui, |ui| {
@@ -975,7 +1032,7 @@ fn show_output_location_footer(ui: &mut egui::Ui, app: &mut HistoryApp) {
                     |ui| {
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(&path).small().color(history_muted()),
+                                egui::RichText::new(&path).small().color(palette.muted),
                             )
                             .truncate(),
                         )
@@ -997,11 +1054,11 @@ fn show_output_location_footer(ui: &mut egui::Ui, app: &mut HistoryApp) {
         });
 }
 
-fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+fn detail_row(ui: &mut egui::Ui, label: &str, value: &str, palette: HistoryPalette) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).color(history_muted()));
+        ui.label(egui::RichText::new(label).color(palette.muted));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(value).strong().color(history_text()));
+            ui.label(egui::RichText::new(value).strong().color(palette.text));
         });
     });
 }
@@ -1098,29 +1155,61 @@ impl SourceTableLayout {
     }
 }
 
-fn show_source_header(ui: &mut egui::Ui, text: &Text, layout: SourceTableLayout) {
+fn show_source_header(
+    ui: &mut egui::Ui,
+    text: &Text,
+    layout: SourceTableLayout,
+    palette: HistoryPalette,
+) {
     let (row_rect, _) = ui.allocate_exact_size(
         egui::vec2(layout.row_width, SOURCE_HEADER_HEIGHT),
         egui::Sense::hover(),
     );
-    ui.painter().rect_filled(
-        row_rect,
-        egui::Rounding::same(0.0),
-        egui::Color32::from_rgb(248, 250, 252),
-    );
+    ui.painter()
+        .rect_filled(row_rect, egui::Rounding::same(0.0), palette.header);
     let columns = layout.column_rects(row_rect);
-    show_header_label(ui, columns.name, text.date_or_folder(), egui::Align::Min);
-    show_header_label(ui, columns.images, text.images(), egui::Align::Center);
-    show_header_label(ui, columns.video, text.video(), egui::Align::Center);
-    show_header_label(ui, columns.status, text.status(), egui::Align::Center);
+    show_header_label(
+        ui,
+        columns.name,
+        text.date_or_folder(),
+        egui::Align::Min,
+        palette,
+    );
+    show_header_label(
+        ui,
+        columns.images,
+        text.images(),
+        egui::Align::Center,
+        palette,
+    );
+    show_header_label(
+        ui,
+        columns.video,
+        text.video(),
+        egui::Align::Center,
+        palette,
+    );
+    show_header_label(
+        ui,
+        columns.status,
+        text.status(),
+        egui::Align::Center,
+        palette,
+    );
     ui.advance_cursor_after_rect(row_rect);
 }
 
-fn show_header_label(ui: &mut egui::Ui, rect: egui::Rect, label: &str, align: egui::Align) {
+fn show_header_label(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    align: egui::Align,
+    palette: HistoryPalette,
+) {
     let rect = rect.shrink2(egui::vec2(4.0, 0.0));
     ui.put(
         rect,
-        egui::Label::new(egui::RichText::new(label).size(15.0).color(history_muted()))
+        egui::Label::new(egui::RichText::new(label).size(15.0).color(palette.muted))
             .truncate()
             .halign(align),
     )
@@ -1135,18 +1224,19 @@ fn show_source_card(
     language: Language,
     enabled: bool,
     text: &Text,
+    palette: HistoryPalette,
 ) -> bool {
     let before = source.selected;
     let can_select = enabled && !source.available_generation_modes().is_empty();
     let fill = if source.selected {
-        history_card_selected()
+        palette.card_selected
     } else {
-        history_card()
+        palette.card
     };
     let stroke = if source.selected {
-        egui::Stroke::new(1.4, egui::Color32::from_rgb(172, 196, 255))
+        egui::Stroke::new(1.4, palette.selected_border)
     } else {
-        egui::Stroke::new(1.0, history_border())
+        egui::Stroke::new(1.0, palette.border)
     };
     let (row_rect, _) = ui.allocate_exact_size(
         egui::vec2(layout.row_width, SOURCE_ROW_HEIGHT),
@@ -1167,7 +1257,7 @@ fn show_source_card(
         egui::pos2(columns.leading.left() + 58.0, row_rect.center().y),
         egui::vec2(34.0, 28.0),
     );
-    paint_folder_icon(ui, icon_rect);
+    paint_folder_icon(ui, icon_rect, palette);
 
     let name_rect = egui::Rect::from_min_max(
         egui::pos2(columns.name.left(), row_rect.top() + 10.0),
@@ -1178,7 +1268,7 @@ fn show_source_card(
         egui::Label::new(
             egui::RichText::new(&source.label)
                 .strong()
-                .color(history_text()),
+                .color(palette.text),
         )
         .truncate(),
     )
@@ -1192,12 +1282,12 @@ fn show_source_card(
         egui::Label::new(
             egui::RichText::new(source_origin_label(language, source.external))
                 .small()
-                .color(history_muted()),
+                .color(palette.muted),
         )
         .truncate(),
     );
 
-    paint_centered_text(ui, columns.images, &source.image_count.to_string());
+    paint_centered_text(ui, columns.images, &source.image_count.to_string(), palette);
     let video_label = if source.output_path_for_mode(mode).exists() {
         text.exists()
     } else {
@@ -1207,15 +1297,15 @@ fn show_source_card(
         ui,
         columns.video,
         video_label,
-        history_blue_soft(),
-        history_blue(),
+        palette.primary_soft,
+        palette.primary,
     );
     paint_chip(
         ui,
         columns.status,
         &source.status_label(language),
-        history_green_soft(),
-        history_green(),
+        palette.success_soft,
+        palette.success,
     );
 
     let changed = source.selected != before;
@@ -1223,13 +1313,13 @@ fn show_source_card(
     changed
 }
 
-fn paint_centered_text(ui: &egui::Ui, rect: egui::Rect, value: &str) {
+fn paint_centered_text(ui: &egui::Ui, rect: egui::Rect, value: &str, palette: HistoryPalette) {
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         value,
         egui::FontId::proportional(16.0),
-        history_text(),
+        palette.text,
     );
 }
 
@@ -1253,20 +1343,12 @@ fn paint_chip(
     .on_hover_text(label);
 }
 
-fn paint_folder_icon(ui: &egui::Ui, rect: egui::Rect) {
+fn paint_folder_icon(ui: &egui::Ui, rect: egui::Rect, palette: HistoryPalette) {
     let painter = ui.painter();
     let tab = egui::Rect::from_min_size(rect.min + egui::vec2(3.0, 3.0), egui::vec2(17.0, 9.0));
     let body = egui::Rect::from_min_size(rect.min + egui::vec2(2.0, 9.0), egui::vec2(30.0, 18.0));
-    painter.rect_filled(
-        tab,
-        egui::Rounding::same(4.0),
-        egui::Color32::from_rgb(255, 221, 130),
-    );
-    painter.rect_filled(
-        body,
-        egui::Rounding::same(5.0),
-        egui::Color32::from_rgb(255, 205, 96),
-    );
+    painter.rect_filled(tab, egui::Rounding::same(4.0), palette.folder_tab);
+    painter.rect_filled(body, egui::Rounding::same(5.0), palette.folder_body);
 }
 
 fn history_subtitle(language: Language) -> &'static str {

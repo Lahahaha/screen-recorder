@@ -13,6 +13,7 @@ mod profile;
 mod screenshot_naming;
 #[cfg(debug_assertions)]
 mod simulate;
+mod single_instance;
 mod temp;
 mod tray;
 mod video;

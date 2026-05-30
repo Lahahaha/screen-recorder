@@ -9,10 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tray_icon::{
-    menu::{
-        CheckMenuItem, Icon as MenuIcon, IconMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem,
-        PredefinedMenuItem, Submenu,
-    },
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
     Icon as TrayIconImage, TrayIcon, TrayIconBuilder,
 };
 
@@ -28,7 +25,7 @@ pub(crate) struct TrayControls {
     capture_source_items: Vec<(u32, CheckMenuItem)>,
     capture_source_screens: Vec<CaptureScreenInfo>,
     generate_video: MenuItem,
-    history_videos: IconMenuItem,
+    history_videos: MenuItem,
     open_output_dir: MenuItem,
     language_menu: Submenu,
     language_items: Vec<(Language, CheckMenuItem)>,
@@ -111,12 +108,7 @@ fn build_menu(
     );
     let capture_source_refresh = MenuItem::new(text.refresh_capture_sources(), true, None);
     let generate_video = MenuItem::new(text.generate_today_video(), true, None);
-    let history_videos = IconMenuItem::new(
-        text.history_videos(),
-        true,
-        Some(create_history_menu_icon()?),
-        None,
-    );
+    let history_videos = MenuItem::new(text.history_videos(), true, None);
     let open_output_dir = MenuItem::new(text.open_output_dir(), true, None);
     let language_menu = Submenu::new(text.language_menu(), true);
     let about = MenuItem::new(text.about(), true, None);
@@ -318,9 +310,8 @@ pub(crate) fn update_running_menu(controls: &TrayControls, is_running: bool, lan
 }
 
 pub(crate) fn update_interval_menu(controls: &TrayControls, seconds: u64, language: Language) {
-    controls
-        .interval_menu
-        .set_text(Text::new(language).interval_menu(seconds));
+    let label = Text::new(language).interval_menu(seconds);
+    controls.interval_menu.set_text(label);
     for (value, item) in &controls.interval_items {
         item.set_checked(*value == seconds);
     }
@@ -460,66 +451,6 @@ fn create_tray_icon() -> AppResult<TrayIconImage> {
     }
 
     Ok(TrayIconImage::from_rgba(rgba, SIZE, SIZE)?)
-}
-
-fn create_history_menu_icon() -> AppResult<MenuIcon> {
-    const SIZE: u32 = 18;
-    let mut rgba = vec![0; (SIZE * SIZE * 4) as usize];
-    let color = [68, 78, 91, 255];
-    let center = SIZE as f32 / 2.0;
-
-    for y in 0..SIZE {
-        for x in 0..SIZE {
-            let dx = x as f32 + 0.5 - center;
-            let dy = y as f32 + 0.5 - center;
-            let distance = (dx * dx + dy * dy).sqrt();
-            if (6.1..=7.4).contains(&distance) {
-                put_pixel(&mut rgba, SIZE, x, y, color);
-            }
-        }
-    }
-
-    draw_line(&mut rgba, SIZE, 9, 9, 9, 5, color);
-    draw_line(&mut rgba, SIZE, 9, 9, 12, 10, color);
-    put_pixel(&mut rgba, SIZE, 9, 9, color);
-
-    Ok(MenuIcon::from_rgba(rgba, SIZE, SIZE)?)
-}
-
-fn draw_line(
-    rgba: &mut [u8],
-    width: u32,
-    start_x: i32,
-    start_y: i32,
-    end_x: i32,
-    end_y: i32,
-    color: [u8; 4],
-) {
-    let mut x = start_x;
-    let mut y = start_y;
-    let dx = (end_x - start_x).abs();
-    let dy = -(end_y - start_y).abs();
-    let step_x = if start_x < end_x { 1 } else { -1 };
-    let step_y = if start_y < end_y { 1 } else { -1 };
-    let mut error = dx + dy;
-
-    loop {
-        if x >= 0 && y >= 0 && x < width as i32 && y < width as i32 {
-            put_pixel(rgba, width, x as u32, y as u32, color);
-        }
-        if x == end_x && y == end_y {
-            break;
-        }
-        let twice_error = error * 2;
-        if twice_error >= dy {
-            error += dy;
-            x += step_x;
-        }
-        if twice_error <= dx {
-            error += dx;
-            y += step_y;
-        }
-    }
 }
 
 fn put_pixel(rgba: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4]) {

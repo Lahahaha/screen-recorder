@@ -10,6 +10,7 @@ use crate::{
     logging::Logger,
     paths::AppPaths,
     platform,
+    single_instance::{InstanceGuard, InstanceKind},
     temp::AtomicFlagGuard,
     tray::{self, AppCommand, TrayControls, TrayState},
     video::generate_today_video,
@@ -98,6 +99,10 @@ struct AppState {
 pub(crate) fn run() -> AppResult<()> {
     let paths = AppPaths::new()?;
     let logger = Logger::new(&paths)?;
+    let Some(_instance_guard) = InstanceGuard::acquire(&paths, InstanceKind::Main)? else {
+        logger.info("主程序已在运行，忽略本次启动");
+        return Ok(());
+    };
     let mut initial_config = load_config(&paths, &logger)?;
     normalize_startup_capture_mode(&paths, &mut initial_config, &logger);
     platform::request_screen_capture_permission(&logger);
