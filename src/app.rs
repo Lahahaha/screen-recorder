@@ -1,6 +1,6 @@
 use crate::{
     capture::capture_once,
-    config::{cloned_config, Config, ConfigStore},
+    config::{cloned_config, load_config, save_current_config, Config},
     logging::Logger,
     paths::AppPaths,
     platform,
@@ -26,7 +26,7 @@ use winit::{
 pub(crate) type AppResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Clone, Default)]
-pub(crate) struct ThreadRegistry {
+struct ThreadRegistry {
     handles: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
 }
 
@@ -58,7 +58,7 @@ impl ThreadRegistry {
     }
 }
 
-pub(crate) struct AppState {
+struct AppState {
     paths: AppPaths,
     config: Arc<Mutex<Config>>,
     running: Arc<AtomicBool>,
@@ -71,7 +71,7 @@ pub(crate) struct AppState {
 pub(crate) fn run() -> AppResult<()> {
     let paths = AppPaths::new()?;
     let logger = Logger::new(&paths)?;
-    let initial_config = ConfigStore::load(&paths, &logger)?;
+    let initial_config = load_config(&paths, &logger)?;
     let auto_start = initial_config.auto_start;
     let config = Arc::new(Mutex::new(initial_config));
     let running = Arc::new(AtomicBool::new(auto_start));
@@ -148,11 +148,7 @@ pub(crate) fn run() -> AppResult<()> {
             Event::LoopExiting => {
                 app_state.shutdown.store(true, Ordering::SeqCst);
                 if !saved_on_quit {
-                    ConfigStore::save_current(
-                        &app_state.paths,
-                        &app_state.config,
-                        &app_state.logger,
-                    );
+                    save_current_config(&app_state.paths, &app_state.config, &app_state.logger);
                     saved_on_quit = true;
                 }
                 if let Some(capture_thread) = capture_thread.take() {
@@ -182,7 +178,7 @@ fn handle_app_command(
         AppCommand::CaptureNow => capture_once_in_thread(
             state.paths.clone(),
             Arc::clone(&state.config),
-            state.workers.clone(),
+            &state.workers,
             state.logger.clone(),
         ),
         AppCommand::ToggleRunning => {
@@ -197,12 +193,12 @@ fn handle_app_command(
             state.paths.clone(),
             Arc::clone(&state.config),
             Arc::clone(&state.generating_video),
-            state.workers.clone(),
+            &state.workers,
             state.logger.clone(),
         ),
         AppCommand::Quit => {
             state.shutdown.store(true, Ordering::SeqCst);
-            ConfigStore::save_current(&state.paths, &state.config, &state.logger);
+            save_current_config(&state.paths, &state.config, &state.logger);
             *saved_on_quit = true;
             event_loop.exit();
         }
@@ -227,10 +223,10 @@ fn set_interval(
 fn capture_once_in_thread(
     paths: AppPaths,
     config: Arc<Mutex<Config>>,
-    workers: ThreadRegistry,
+    workers: &ThreadRegistry,
     logger: Logger,
 ) {
-    workers.clone().spawn(move || match cloned_config(&config) {
+    workers.spawn(move || match cloned_config(&config) {
         Ok(config) => {
             if let Err(error) = capture_once(&paths, &config, &logger) {
                 logger.error(format!("手动截屏失败: {error}"));
@@ -244,7 +240,7 @@ fn generate_today_video_in_thread(
     paths: AppPaths,
     config: Arc<Mutex<Config>>,
     generating_video: Arc<AtomicBool>,
-    workers: ThreadRegistry,
+    workers: &ThreadRegistry,
     logger: Logger,
 ) {
     if generating_video
@@ -256,7 +252,7 @@ fn generate_today_video_in_thread(
         return;
     }
 
-    workers.clone().spawn(move || {
+    workers.spawn(move || {
         let _generating_video_guard = AtomicFlagGuard::new(generating_video);
         match cloned_config(&config) {
             Ok(config) => {

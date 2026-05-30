@@ -31,7 +31,7 @@ impl AppPaths {
         })
     }
 
-    pub(crate) fn find_data_dir() -> AppResult<PathBuf> {
+    fn find_data_dir() -> AppResult<PathBuf> {
         // 1. 优先使用系统视频目录
         if let Some(video_dir) = dirs::video_dir() {
             let root = video_dir.join("ScreenRecorder");

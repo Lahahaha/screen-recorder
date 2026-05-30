@@ -1,10 +1,10 @@
 use crate::{
     app::AppResult,
     logging::Logger,
-    platform::{find_in_path, is_usable_executable},
+    platform::{find_ffmpeg_binary, rename_with_context},
 };
 use std::{
-    env, fs, io,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
     thread,
@@ -12,16 +12,7 @@ use std::{
 
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
     if !destination.exists() {
-        fs::rename(source, destination).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "替换文件失败 {} -> {}: {error}",
-                    source.display(),
-                    destination.display()
-                ),
-            )
-        })?;
+        rename_with_context(source, destination, "替换文件失败")?;
         return Ok(());
     }
 
@@ -35,18 +26,9 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
         })?;
     }
 
-    fs::rename(destination, &backup).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "备份目标文件失败 {} -> {}: {error}",
-                destination.display(),
-                backup.display()
-            ),
-        )
-    })?;
+    rename_with_context(destination, &backup, "备份目标文件失败")?;
 
-    match fs::rename(source, destination) {
+    match rename_with_context(source, destination, "替换文件失败") {
         Ok(()) => {
             fs::remove_file(&backup).map_err(|error| {
                 io::Error::new(
@@ -57,25 +39,11 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
             Ok(())
         }
         Err(error) => {
-            let restore_error = fs::rename(&backup, destination).err();
+            let restore_error = rename_with_context(&backup, destination, "恢复备份失败").err();
             let restore_message = restore_error
-                .map(|restore_error| {
-                    format!(
-                        "；恢复备份失败 {} -> {}: {restore_error}",
-                        backup.display(),
-                        destination.display()
-                    )
-                })
+                .map(|restore_error| format!("；{restore_error}"))
                 .unwrap_or_default();
-            Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "替换文件失败 {} -> {}: {error}{restore_message}",
-                    source.display(),
-                    destination.display()
-                ),
-            )
-            .into())
+            Err(io::Error::new(error.kind(), format!("{error}{restore_message}")).into())
         }
     }
 }
@@ -89,23 +57,7 @@ fn backup_path(path: &Path) -> PathBuf {
 }
 
 pub(crate) fn find_ffmpeg() -> AppResult<PathBuf> {
-    let executable = env::current_exe()?.canonicalize()?;
-    let executable_dir = executable
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "无法定位当前可执行文件所在目录"))?;
-
-    let same_dir = executable_dir.join("ffmpeg.exe");
-    if is_usable_executable(&same_dir) {
-        return Ok(same_dir);
-    }
-
-    find_in_path("ffmpeg.exe").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            "找不到 ffmpeg，请将 ffmpeg 放入程序所在目录或安装到 PATH",
-        )
-        .into()
-    })
+    find_ffmpeg_binary("ffmpeg.exe", &[])
 }
 
 pub(crate) fn notify(title: &str, message: &str, logger: Logger) {

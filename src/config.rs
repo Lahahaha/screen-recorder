@@ -9,18 +9,6 @@ use std::{
 pub(crate) const SUPPORTED_INTERVALS: [u64; 4] = [10, 30, 60, 120];
 const MAX_SCALE: f32 = 4.0;
 
-pub(crate) struct ConfigStore;
-
-impl ConfigStore {
-    pub(crate) fn load(paths: &AppPaths, logger: &Logger) -> AppResult<Config> {
-        load_config(paths, logger)
-    }
-
-    pub(crate) fn save_current(paths: &AppPaths, config: &Arc<Mutex<Config>>, logger: &Logger) {
-        save_current_config(paths, config, logger);
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub(crate) struct Config {
@@ -146,7 +134,8 @@ pub(crate) fn load_config(paths: &AppPaths, logger: &Logger) -> AppResult<Config
     let content = fs::read_to_string(&paths.config)?;
     let mut config: Config = match serde_json::from_str(&content) {
         Ok(config) => config,
-        Err(_) => {
+        Err(error) => {
+            logger.error(format!("解析配置失败，将重置为默认配置: {error}"));
             backup_corrupted_config(paths)?;
             let config = Config::default();
             save_config(paths, &config)?;

@@ -1,6 +1,6 @@
 use crate::{
     app::AppResult,
-    capture::{is_supported_image, screenshot_format_for_path},
+    capture::screenshot_format_for_path,
     config::{ScreenshotFormat, VideoCodec},
     logging::Logger,
     paths::AppPaths,
@@ -28,16 +28,9 @@ pub(crate) fn generate_today_video(
         return Err(io::Error::new(io::ErrorKind::NotFound, "今天还没有截图").into());
     }
 
-    let mut images = fs::read_dir(&screenshot_dir)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| is_supported_image(path))
-        .collect::<Vec<_>>();
-    images.sort();
-
-    if images.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, "今天还没有截图").into());
-    }
+    let images = fs::read_dir(&screenshot_dir)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let (images, frame_format) = choose_video_images(images, image_format)?;
     fs::create_dir_all(&paths.videos)?;
@@ -84,7 +77,7 @@ fn choose_video_images(
     mut images: Vec<PathBuf>,
     image_format: ScreenshotFormat,
 ) -> AppResult<(Vec<PathBuf>, ScreenshotFormat)> {
-    images.retain(|path| is_supported_image(path));
+    images.retain(|path| screenshot_format_for_path(path).is_some());
     images.sort();
 
     if images.is_empty() {

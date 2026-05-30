@@ -24,7 +24,7 @@ static SCREENSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static LAST_SCREENSHOT: Mutex<Option<ScreenshotFingerprint>> = Mutex::new(None);
 
 #[derive(Clone, Debug)]
-pub(crate) struct ScreenshotFingerprint {
+struct ScreenshotFingerprint {
     hash: u64,
     path: PathBuf,
 }
@@ -129,10 +129,6 @@ fn rgba_buffer_hash(image: &DynamicImage) -> u64 {
     rgba.height().hash(&mut hasher);
     rgba.as_raw().hash(&mut hasher);
     hasher.finish()
-}
-
-pub(crate) fn is_supported_image(path: &Path) -> bool {
-    screenshot_format_for_path(path).is_some()
 }
 
 pub(crate) fn screenshot_format_for_path(path: &Path) -> Option<ScreenshotFormat> {
