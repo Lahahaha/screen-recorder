@@ -84,10 +84,7 @@ pub(crate) fn open_path(path: &Path) -> AppResult<()> {
     let mut cmd = Command::new("explorer");
     cmd.arg(path);
     hide_console(&mut cmd);
-    let status = cmd.status()?;
-    if !status.success() {
-        return Err(io::Error::other(format!("打开路径失败 {}: {status}", path.display())).into());
-    }
+    cmd.spawn()?;
     Ok(())
 }
 

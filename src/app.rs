@@ -9,7 +9,9 @@ use crate::{
     video::generate_today_video,
 };
 use std::{
+    any::Any,
     error::Error,
+    panic::{self, AssertUnwindSafe},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -39,11 +41,15 @@ struct ThreadRegistry {
 }
 
 impl ThreadRegistry {
-    fn spawn<F>(&self, task: F)
+    fn spawn<F>(&self, task_name: &'static str, logger: Logger, task: F)
     where
         F: FnOnce() + Send + 'static,
     {
-        let handle = thread::spawn(task);
+        let handle = thread::spawn(move || {
+            if let Err(panic_payload) = panic::catch_unwind(AssertUnwindSafe(task)) {
+                report_thread_panic(task_name, panic_payload.as_ref(), &logger);
+            }
+        });
         if let Ok(mut handles) = self.handles.lock() {
             handles.push(handle);
         }
@@ -294,27 +300,31 @@ fn capture_once_in_thread(
     workers: &ThreadRegistry,
     logger: Logger,
 ) {
-    workers.spawn(move || match cloned_config(&config) {
-        Ok(config) => match capture_once(&paths, &config, &logger) {
-            Ok(path) => {
-                let _ = app_events.send(AppEvent::CaptureSucceeded { path, notify: true });
-            }
+    workers.spawn(
+        "手动截屏任务",
+        logger.clone(),
+        move || match cloned_config(&config) {
+            Ok(config) => match capture_once(&paths, &config, &logger) {
+                Ok(path) => {
+                    let _ = app_events.send(AppEvent::CaptureSucceeded { path, notify: true });
+                }
+                Err(error) => {
+                    logger.error(format!("手动截屏失败: {error}"));
+                    let _ = app_events.send(AppEvent::CaptureFailed {
+                        message: error.to_string(),
+                        notify: true,
+                    });
+                }
+            },
             Err(error) => {
-                logger.error(format!("手动截屏失败: {error}"));
+                logger.error(format!("读取配置失败: {error}"));
                 let _ = app_events.send(AppEvent::CaptureFailed {
-                    message: error.to_string(),
+                    message: format!("读取配置失败: {error}"),
                     notify: true,
                 });
             }
         },
-        Err(error) => {
-            logger.error(format!("读取配置失败: {error}"));
-            let _ = app_events.send(AppEvent::CaptureFailed {
-                message: format!("读取配置失败: {error}"),
-                notify: true,
-            });
-        }
-    });
+    );
 }
 
 fn generate_today_video_in_thread(
@@ -333,7 +343,7 @@ fn generate_today_video_in_thread(
         return;
     }
 
-    workers.spawn(move || {
+    workers.spawn("生成视频任务", logger.clone(), move || {
         let _generating_video_guard = AtomicFlagGuard::new(generating_video);
         match cloned_config(&config) {
             Ok(config) => {
@@ -378,60 +388,95 @@ fn spawn_capture_loop(
     logger: Logger,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
-        let mut next_capture = Instant::now();
-        let mut last_interval = cloned_config(&config)
-            .map(|config| config.interval)
-            .unwrap_or_else(|error| {
-                logger.error(format!("读取配置失败: {error}"));
-                Config::default().interval
-            });
-
-        while !shutdown.load(Ordering::SeqCst) {
-            if running.load(Ordering::SeqCst) {
-                let now = Instant::now();
-                match cloned_config(&config) {
-                    Ok(config) => {
-                        let interval = config.interval;
-                        if interval != last_interval {
-                            last_interval = interval;
-                            next_capture = now + Duration::from_secs(interval);
-                        }
-
-                        if now >= next_capture {
-                            match capture_once(&paths, &config, &logger) {
-                                Ok(path) => {
-                                    let _ = app_events.send(AppEvent::CaptureSucceeded {
-                                        path,
-                                        notify: false,
-                                    });
-                                }
-                                Err(error) => {
-                                    logger.error(format!("定时截屏失败: {error}"));
-                                    let _ = app_events.send(AppEvent::CaptureFailed {
-                                        message: error.to_string(),
-                                        notify: false,
-                                    });
-                                }
-                            }
-                            next_capture = now + Duration::from_secs(interval);
-                        }
-                    }
-                    Err(error) => {
-                        logger.error(format!("读取配置失败: {error}"));
-                        last_interval = Config::default().interval;
-                        next_capture = now + Duration::from_secs(last_interval);
-                    }
-                }
-            } else {
-                next_capture = Instant::now();
-                if let Ok(config) = cloned_config(&config) {
-                    last_interval = config.interval;
-                }
-            }
-
-            thread::sleep(Duration::from_secs(1));
+        let panic_logger = logger.clone();
+        if let Err(panic_payload) = panic::catch_unwind(AssertUnwindSafe(move || {
+            run_capture_loop(paths, running, shutdown, config, app_events, logger);
+        })) {
+            report_thread_panic("定时截屏线程", panic_payload.as_ref(), &panic_logger);
         }
     })
+}
+
+fn run_capture_loop(
+    paths: AppPaths,
+    running: Arc<AtomicBool>,
+    shutdown: Arc<AtomicBool>,
+    config: Arc<Mutex<Config>>,
+    app_events: mpsc::Sender<AppEvent>,
+    logger: Logger,
+) {
+    let mut next_capture = Instant::now();
+    let mut last_interval = cloned_config(&config)
+        .map(|config| config.interval)
+        .unwrap_or_else(|error| {
+            logger.error(format!("读取配置失败: {error}"));
+            Config::default().interval
+        });
+
+    while !shutdown.load(Ordering::SeqCst) {
+        if running.load(Ordering::SeqCst) {
+            let now = Instant::now();
+            match cloned_config(&config) {
+                Ok(config) => {
+                    let interval = config.interval;
+                    if interval != last_interval {
+                        last_interval = interval;
+                        next_capture = now + Duration::from_secs(interval);
+                    }
+
+                    if now >= next_capture {
+                        match capture_once(&paths, &config, &logger) {
+                            Ok(path) => {
+                                let _ = app_events.send(AppEvent::CaptureSucceeded {
+                                    path,
+                                    notify: false,
+                                });
+                            }
+                            Err(error) => {
+                                logger.error(format!("定时截屏失败: {error}"));
+                                let _ = app_events.send(AppEvent::CaptureFailed {
+                                    message: error.to_string(),
+                                    notify: false,
+                                });
+                            }
+                        }
+                        next_capture = now + Duration::from_secs(interval);
+                    }
+                }
+                Err(error) => {
+                    logger.error(format!("读取配置失败: {error}"));
+                    last_interval = Config::default().interval;
+                    next_capture = now + Duration::from_secs(last_interval);
+                }
+            }
+        } else {
+            next_capture = Instant::now();
+            if let Ok(config) = cloned_config(&config) {
+                last_interval = config.interval;
+            }
+        }
+
+        thread::sleep(Duration::from_secs(1));
+    }
+}
+
+fn report_thread_panic(task_name: &str, panic_payload: &(dyn Any + Send), logger: &Logger) {
+    let message = format!(
+        "{task_name} panic: {}",
+        panic_payload_message(panic_payload)
+    );
+    logger.error(&message);
+    platform::notify("后台任务异常退出", &message, logger.clone());
+}
+
+fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "未知 panic payload".to_string()
 }
 
 fn handle_app_event(
@@ -483,5 +528,24 @@ fn update_tray_tooltip(
         app_state
             .logger
             .error(format!("更新托盘状态提示失败: {error}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panic_payload_message_reads_str_payload() {
+        let payload: &(dyn Any + Send) = &"boom";
+
+        assert_eq!(panic_payload_message(payload), "boom");
+    }
+
+    #[test]
+    fn panic_payload_message_reads_string_payload() {
+        let payload: &(dyn Any + Send) = &"boom".to_string();
+
+        assert_eq!(panic_payload_message(payload), "boom");
     }
 }
