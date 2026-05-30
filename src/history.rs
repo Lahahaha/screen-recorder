@@ -636,7 +636,11 @@ impl eframe::App for HistoryApp {
             });
 
         egui::TopBottomPanel::bottom("status")
-            .frame(egui::Frame::none().fill(palette.bg))
+            .frame(
+                egui::Frame::none()
+                    .fill(palette.bg)
+                    .inner_margin(egui::Margin::symmetric(24.0, 6.0)),
+            )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
@@ -658,26 +662,45 @@ impl eframe::App for HistoryApp {
         egui::SidePanel::right("details")
             .resizable(true)
             .default_width(340.0)
-            .frame(egui::Frame::none().fill(palette.bg))
+            .frame(
+                egui::Frame::none()
+                    .fill(palette.bg)
+                    .inner_margin(egui::Margin {
+                        left: HISTORY_PANEL_MARGIN_X,
+                        right: HISTORY_PANEL_MARGIN_X,
+                        top: 0.0,
+                        bottom: HISTORY_PANEL_BOTTOM_GAP,
+                    }),
+            )
             .show(ctx, |ui| {
-                ui.add_space(8.0);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Frame::none()
-                        .fill(palette.card)
-                        .stroke(egui::Stroke::new(1.0, palette.border))
-                        .rounding(egui::Rounding::same(12.0))
-                        .inner_margin(egui::Margin::same(18.0))
-                        .show(ui, |ui| {
+                ui.add_space(HISTORY_PANEL_TOP_GAP);
+                egui::Frame::none()
+                    .fill(palette.card)
+                    .stroke(egui::Stroke::new(1.0, palette.border))
+                    .rounding(egui::Rounding::same(12.0))
+                    .inner_margin(egui::Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.set_min_height(ui.available_height());
+                        egui::ScrollArea::vertical().show(ui, |ui| {
                             show_details_panel(ui, self, &text, selected_count, palette);
                         });
-                    ui.add_space(32.0);
-                });
+                    });
             });
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(palette.bg))
+            .frame(
+                egui::Frame::none()
+                    .fill(palette.bg)
+                    .inner_margin(egui::Margin {
+                        left: HISTORY_PANEL_MARGIN_X,
+                        right: HISTORY_PANEL_MARGIN_X,
+                        top: 0.0,
+                        bottom: HISTORY_PANEL_BOTTOM_GAP,
+                    }),
+            )
             .show(ctx, |ui| {
-                ui.add_space(8.0);
+                ui.add_space(HISTORY_PANEL_TOP_GAP);
                 let mut selection_changed = false;
                 egui::Frame::none()
                     .fill(palette.card)
@@ -685,6 +708,8 @@ impl eframe::App for HistoryApp {
                     .rounding(egui::Rounding::same(12.0))
                     .inner_margin(egui::Margin::same(16.0))
                     .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.set_min_height(ui.available_height());
                         ui.heading(
                             egui::RichText::new(folder_list_title(self.config.language))
                                 .size(22.0)
@@ -809,6 +834,9 @@ impl HistoryPalette {
 }
 
 const HISTORY_MODE_ROW_HEIGHT: f32 = 44.0;
+const HISTORY_PANEL_MARGIN_X: f32 = 24.0;
+const HISTORY_PANEL_TOP_GAP: f32 = 16.0;
+const HISTORY_PANEL_BOTTOM_GAP: f32 = 16.0;
 const HISTORY_MODE_SUMMARY_WIDTH: f32 = 150.0;
 const HISTORY_MODE_SUMMARY_CONTENT_HEIGHT: f32 = 36.0;
 
