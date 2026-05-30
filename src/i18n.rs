@@ -20,6 +20,17 @@ pub(crate) struct TextBundle {
     generate_today_video: &'static str,
     open_output_dir: &'static str,
     language_menu: &'static str,
+    about: &'static str,
+    about_window_title: &'static str,
+    about_description: &'static str,
+    about_failed_title: &'static str,
+    version_label: &'static str,
+    author_label: &'static str,
+    license_label: &'static str,
+    copyright_label: &'static str,
+    homepage_label: &'static str,
+    save_folder_label: &'static str,
+    config_file_label: &'static str,
     quit: &'static str,
     status_running: &'static str,
     status_paused: &'static str,
@@ -97,6 +108,17 @@ const ZH_CN_TEXT: TextBundle = TextBundle {
     generate_today_video: "🎬 生成今日视频",
     open_output_dir: "📁 打开保存目录",
     language_menu: "🌐 语言",
+    about: "关于",
+    about_window_title: "关于 Screen Recorder",
+    about_description: "轻量级屏幕记录工具，定时保存截图并生成延时视频。",
+    about_failed_title: "打开关于窗口失败",
+    version_label: "版本",
+    author_label: "作者",
+    license_label: "许可证",
+    copyright_label: "版权",
+    homepage_label: "项目主页",
+    save_folder_label: "保存目录",
+    config_file_label: "配置文件",
     quit: "❌ 退出",
     status_running: "运行中",
     status_paused: "已暂停",
@@ -172,6 +194,18 @@ const EN_TEXT: TextBundle = TextBundle {
     generate_today_video: "🎬 Generate Today's Video",
     open_output_dir: "📁 Open Save Folder",
     language_menu: "🌐 Language",
+    about: "About",
+    about_window_title: "About Screen Recorder",
+    about_description:
+        "A lightweight screen recorder that saves timed screenshots and creates time-lapse videos.",
+    about_failed_title: "Failed to Open About Window",
+    version_label: "Version",
+    author_label: "Author",
+    license_label: "License",
+    copyright_label: "Copyright",
+    homepage_label: "Homepage",
+    save_folder_label: "Save Folder",
+    config_file_label: "Config File",
     quit: "❌ Quit",
     status_running: "Running",
     status_paused: "Paused",
@@ -298,6 +332,50 @@ impl Text {
 
     pub(crate) fn language_menu(&self) -> &'static str {
         self.bundle.language_menu
+    }
+
+    pub(crate) fn about(&self) -> &'static str {
+        self.bundle.about
+    }
+
+    pub(crate) fn about_window_title(&self) -> &'static str {
+        self.bundle.about_window_title
+    }
+
+    pub(crate) fn about_description(&self) -> &'static str {
+        self.bundle.about_description
+    }
+
+    pub(crate) fn about_failed_title(&self) -> &'static str {
+        self.bundle.about_failed_title
+    }
+
+    pub(crate) fn version_label(&self) -> &'static str {
+        self.bundle.version_label
+    }
+
+    pub(crate) fn author_label(&self) -> &'static str {
+        self.bundle.author_label
+    }
+
+    pub(crate) fn license_label(&self) -> &'static str {
+        self.bundle.license_label
+    }
+
+    pub(crate) fn copyright_label(&self) -> &'static str {
+        self.bundle.copyright_label
+    }
+
+    pub(crate) fn homepage_label(&self) -> &'static str {
+        self.bundle.homepage_label
+    }
+
+    pub(crate) fn save_folder_label(&self) -> &'static str {
+        self.bundle.save_folder_label
+    }
+
+    pub(crate) fn config_file_label(&self) -> &'static str {
+        self.bundle.config_file_label
     }
 
     pub(crate) fn quit(&self) -> &'static str {
@@ -557,6 +635,9 @@ mod tests {
             assert!(!language.config_value().is_empty());
             assert!(!language.menu_label().is_empty());
             assert!(!bundle_for_language(*language).capture_now.is_empty());
+            assert!(!bundle_for_language(*language).about.is_empty());
+            assert!(!bundle_for_language(*language).about_window_title.is_empty());
+            assert!(!bundle_for_language(*language).about_description.is_empty());
             assert!(!bundle_for_language(*language)
                 .screen_capture_permission_body
                 .is_empty());

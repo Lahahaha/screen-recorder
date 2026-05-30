@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod about;
 mod app;
 mod capture;
 mod config;
@@ -38,6 +39,9 @@ fn main() -> app::AppResult<()> {
 
     if args.iter().any(|arg| arg == "--history") {
         return history::run();
+    }
+    if args.iter().any(|arg| arg == "--about") {
+        return about::run();
     }
     app::run()
 }

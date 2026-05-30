@@ -29,6 +29,7 @@ pub(crate) struct TrayControls {
     open_output_dir: MenuItem,
     language_menu: Submenu,
     language_items: Vec<(Language, CheckMenuItem)>,
+    about: MenuItem,
     quit: MenuItem,
 }
 
@@ -48,6 +49,7 @@ pub(crate) enum AppCommand {
     GenerateTodayVideo,
     OpenHistoryVideos,
     OpenOutputDir,
+    OpenAbout,
     Quit,
 }
 
@@ -109,6 +111,7 @@ fn build_menu(
     let history_videos = MenuItem::new(text.history_videos(), true, None);
     let open_output_dir = MenuItem::new(text.open_output_dir(), true, None);
     let language_menu = Submenu::new(text.language_menu(), true);
+    let about = MenuItem::new(text.about(), true, None);
     let quit = MenuItem::new(text.quit(), true, None);
 
     let interval_items = SUPPORTED_INTERVALS
@@ -185,6 +188,8 @@ fn build_menu(
         &open_output_dir,
         &language_menu,
         &PredefinedMenuItem::separator(),
+        &about,
+        &PredefinedMenuItem::separator(),
         &quit,
     ])?;
 
@@ -204,6 +209,7 @@ fn build_menu(
         open_output_dir,
         language_menu,
         language_items,
+        about,
         quit,
     })
 }
@@ -257,6 +263,10 @@ pub(crate) fn command_for_event(event: &MenuEvent, controls: &TrayControls) -> O
         return Some(AppCommand::OpenOutputDir);
     }
 
+    if event.id == controls.about.id() {
+        return Some(AppCommand::OpenAbout);
+    }
+
     if event.id == controls.quit.id() {
         return Some(AppCommand::Quit);
     }
@@ -285,6 +295,7 @@ pub(crate) fn update_menu_labels(
     for (value, item) in &controls.language_items {
         item.set_checked(*value == language);
     }
+    controls.about.set_text(text.about());
     controls.quit.set_text(text.quit());
 }
 
@@ -505,6 +516,20 @@ mod tests {
         assert_eq!(
             command_for_event(&event, &controls),
             Some(AppCommand::OpenHistoryVideos)
+        );
+    }
+
+    #[test]
+    fn command_for_event_detects_about() {
+        let controls =
+            build_menu(30, Language::ZhCn, CaptureMode::Auto, Vec::new()).expect("build menu");
+        let event = MenuEvent {
+            id: controls.about.id().clone(),
+        };
+
+        assert_eq!(
+            command_for_event(&event, &controls),
+            Some(AppCommand::OpenAbout)
         );
     }
 

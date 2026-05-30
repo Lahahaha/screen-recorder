@@ -305,6 +305,17 @@ fn handle_app_command(
                 );
             }
         }
+        AppCommand::OpenAbout => {
+            if let Err(error) = open_about_window() {
+                state.logger.error(format!("打开关于窗口失败: {error}"));
+                let text = Text::new(current_language(&state.config, &state.logger));
+                platform::notify(
+                    text.about_failed_title(),
+                    &format!("{error}"),
+                    state.logger.clone(),
+                );
+            }
+        }
         AppCommand::OpenOutputDir => {
             if let Err(error) = platform::open_path(&state.paths.root) {
                 let text = Text::new(current_language(&state.config, &state.logger));
@@ -329,6 +340,15 @@ fn open_history_window() -> AppResult<()> {
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command.arg("--history");
+    platform::hide_console(&mut command);
+    command.spawn()?;
+    Ok(())
+}
+
+fn open_about_window() -> AppResult<()> {
+    let executable = std::env::current_exe()?;
+    let mut command = Command::new(executable);
+    command.arg("--about");
     platform::hide_console(&mut command);
     command.spawn()?;
     Ok(())
