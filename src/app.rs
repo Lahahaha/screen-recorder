@@ -18,6 +18,8 @@ use std::{
     time::{Duration, Instant},
 };
 use tray_icon::menu::MenuEvent;
+#[cfg(target_os = "macos")]
+use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::{
     event::{Event, StartCause},
     event_loop::{ControlFlow, EventLoopBuilder},
@@ -96,8 +98,12 @@ pub(crate) fn run() -> AppResult<()> {
         logger,
     };
 
+    let mut event_loop_builder = EventLoopBuilder::<()>::with_user_event();
+    #[cfg(target_os = "macos")]
+    event_loop_builder.with_activation_policy(ActivationPolicy::Accessory);
+
     #[allow(deprecated)]
-    let event_loop = EventLoopBuilder::<()>::with_user_event().build()?;
+    let event_loop = event_loop_builder.build()?;
     let (menu_tx, menu_rx) = mpsc::channel::<MenuEvent>();
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = menu_tx.send(event);
