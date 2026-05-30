@@ -5,15 +5,17 @@ use crate::{
     logging::Logger,
     paths::AppPaths,
     platform,
-    screenshot_naming::screenshot_format_for_path,
+    screenshot_naming::{parse_screenshot_file_name, screenshot_format_for_path, ScreenshotName},
     video::{
-        generate_video_from_dir_with_control, VideoGenerationCancelToken, VideoGenerationProgress,
+        generate_video_from_dir_with_mode_and_control, VideoGenerationCancelToken,
+        VideoGenerationMode, VideoGenerationOptions, VideoGenerationProgress,
         VideoGenerationReport,
     },
 };
 use chrono::Local;
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
 use std::{
+    collections::BTreeSet,
     fs, io,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
@@ -102,6 +104,7 @@ struct HistoryApp {
     config: Config,
     logger: Logger,
     sources: Vec<VideoSource>,
+    generation_mode: VideoGenerationMode,
     next_id: u64,
     generating: bool,
     cancel_token: Option<VideoGenerationCancelToken>,
@@ -117,6 +120,8 @@ struct VideoSource {
     input_dir: PathBuf,
     output_path: PathBuf,
     image_count: usize,
+    single_compatible_count: usize,
+    screen_indices: BTreeSet<u32>,
     selected: bool,
     external: bool,
     status: SourceStatus,
@@ -126,6 +131,7 @@ struct VideoSource {
 enum SourceStatus {
     Ready,
     Unavailable,
+    ModeUnavailable,
     Generating {
         progress: Option<VideoGenerationProgress>,
     },
@@ -140,6 +146,7 @@ struct VideoJob {
     id: u64,
     input_dir: PathBuf,
     output_path: PathBuf,
+    mode: VideoGenerationMode,
 }
 
 enum GenerateEvent {
@@ -156,6 +163,7 @@ impl HistoryApp {
             config,
             logger,
             sources: Vec::new(),
+            generation_mode: VideoGenerationMode::MultiScreen,
             next_id: 1,
             generating: false,
             cancel_token: None,
@@ -192,6 +200,8 @@ impl HistoryApp {
             let output_path = self.paths.video_path_for_date(&label);
             self.push_source(label, dir, output_path, false);
         }
+        self.ensure_generation_mode_available();
+        self.apply_generation_mode();
     }
 
     fn push_source(
@@ -201,22 +211,21 @@ impl HistoryApp {
         output_path: PathBuf,
         external: bool,
     ) {
-        let image_count = count_supported_images(&input_dir).unwrap_or(0);
-        let status = if image_count == 0 {
-            SourceStatus::Unavailable
-        } else {
-            SourceStatus::Ready
-        };
+        let stats = inspect_video_source(&input_dir).unwrap_or_default();
         self.sources.push(VideoSource {
             id: self.next_id,
             label,
             input_dir,
             output_path,
-            image_count,
+            image_count: stats.image_count,
+            single_compatible_count: stats.single_compatible_count,
+            screen_indices: stats.screen_indices,
             selected: false,
             external,
-            status,
+            status: SourceStatus::Ready,
         });
+        let index = self.sources.len() - 1;
+        self.sources[index].status = self.sources[index].status_for_mode(self.generation_mode);
         self.next_id += 1;
     }
 
@@ -231,13 +240,15 @@ impl HistoryApp {
     }
 
     fn selected_jobs(&self) -> Vec<VideoJob> {
+        let mode = self.generation_mode;
         self.sources
             .iter()
-            .filter(|source| source.selected && source.can_generate())
+            .filter(|source| source.selected && source.can_generate_for_mode(mode))
             .map(|source| VideoJob {
                 id: source.id,
                 input_dir: source.input_dir.clone(),
-                output_path: source.output_path.clone(),
+                output_path: source.output_path_for_mode(mode),
+                mode,
             })
             .collect()
     }
@@ -270,11 +281,14 @@ impl HistoryApp {
                 let progress_ctx = ctx.clone();
                 let progress_cancel_token = worker_cancel_token.clone();
                 let result = panic::catch_unwind(AssertUnwindSafe(|| {
-                    generate_video_from_dir_with_control(
+                    generate_video_from_dir_with_mode_and_control(
                         &job.input_dir,
                         &job.output_path,
-                        config.fps,
-                        config.video_codec,
+                        VideoGenerationOptions {
+                            fps: config.fps,
+                            video_codec: config.video_codec,
+                            mode: job.mode,
+                        },
                         &logger,
                         |progress| {
                             send_generate_event(
@@ -405,6 +419,47 @@ impl HistoryApp {
         }
         format!("{}: {done}, {}: {failed}", text.done_label(), text.failed())
     }
+
+    fn available_screen_indices(&self) -> Vec<u32> {
+        let mut indices = BTreeSet::new();
+        for source in &self.sources {
+            indices.extend(source.screen_indices.iter().copied());
+        }
+        indices.into_iter().collect()
+    }
+
+    fn set_generation_mode(&mut self, mode: VideoGenerationMode) {
+        if self.generation_mode == mode {
+            return;
+        }
+        self.generation_mode = mode;
+        self.apply_generation_mode();
+    }
+
+    fn ensure_generation_mode_available(&mut self) {
+        let VideoGenerationMode::SingleScreen(index) = self.generation_mode else {
+            return;
+        };
+        if !self
+            .sources
+            .iter()
+            .any(|source| source.screen_indices.contains(&index))
+        {
+            self.generation_mode = VideoGenerationMode::MultiScreen;
+        }
+    }
+
+    fn apply_generation_mode(&mut self) {
+        let mode = self.generation_mode;
+        for source in &mut self.sources {
+            if !source.can_generate_for_mode(mode) {
+                source.selected = false;
+            }
+            if !matches!(source.status, SourceStatus::Generating { .. }) {
+                source.status = source.status_for_mode(mode);
+            }
+        }
+    }
 }
 
 impl eframe::App for HistoryApp {
@@ -433,10 +488,35 @@ impl eframe::App for HistoryApp {
                         self.add_external_folder(folder);
                     }
                 }
-                let can_generate = self
-                    .sources
-                    .iter()
-                    .any(|source| source.selected && source.can_generate());
+                ui.separator();
+                ui.label(text.generation_mode());
+                let mut selected_mode = self.generation_mode;
+                let available_screen_indices = self.available_screen_indices();
+                ui.add_enabled_ui(!self.generating, |ui| {
+                    egui::ComboBox::from_id_salt("history_generation_mode")
+                        .selected_text(generation_mode_label(&text, self.generation_mode))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut selected_mode,
+                                VideoGenerationMode::MultiScreen,
+                                text.multi_screen_generation_mode(),
+                            );
+                            for screen_index in available_screen_indices {
+                                ui.selectable_value(
+                                    &mut selected_mode,
+                                    VideoGenerationMode::SingleScreen(screen_index),
+                                    text.generation_screen_mode(screen_index),
+                                );
+                            }
+                        });
+                });
+                if !self.generating && selected_mode != self.generation_mode {
+                    self.set_generation_mode(selected_mode);
+                }
+                ui.separator();
+                let can_generate = self.sources.iter().any(|source| {
+                    source.selected && source.can_generate_for_mode(self.generation_mode)
+                });
                 if ui
                     .add_enabled(
                         !self.generating && can_generate,
@@ -486,11 +566,16 @@ impl eframe::App for HistoryApp {
                         ui.small(format!(
                             "{}: {}",
                             text.output(),
-                            source.output_path.display()
+                            source.output_path_for_mode(self.generation_mode).display()
                         ));
                     }
                 }
                 ui.separator();
+                ui.label(format!(
+                    "{}: {}",
+                    text.generation_mode(),
+                    generation_mode_label(&text, self.generation_mode)
+                ));
                 ui.label(format!("FPS: {}", self.config.fps));
                 ui.label(format!("Codec: {}", self.config.video_codec.config_value()));
             });
@@ -509,15 +594,18 @@ impl eframe::App for HistoryApp {
                         ui.end_row();
 
                         for source in &mut self.sources {
-                            let enabled = !self.generating && source.can_generate();
+                            let enabled = !self.generating
+                                && source.can_generate_for_mode(self.generation_mode);
                             ui.add_enabled(enabled, egui::Checkbox::new(&mut source.selected, ""));
                             ui.label(source.display_label());
                             ui.label(source.image_count.to_string());
-                            ui.label(if source.output_path.exists() {
-                                text.exists()
-                            } else {
-                                text.missing()
-                            });
+                            ui.label(
+                                if source.output_path_for_mode(self.generation_mode).exists() {
+                                    text.exists()
+                                } else {
+                                    text.missing()
+                                },
+                            );
                             ui.label(source.status_label(self.config.language));
                             ui.end_row();
                         }
@@ -628,8 +716,38 @@ fn progress_status_label(text: &Text, progress: &VideoGenerationProgress) -> Str
 }
 
 impl VideoSource {
-    fn can_generate(&self) -> bool {
-        self.image_count > 0 && !matches!(self.status, SourceStatus::Unavailable)
+    fn can_generate_for_mode(&self, mode: VideoGenerationMode) -> bool {
+        self.has_compatible_images(mode)
+            && !matches!(
+                self.status,
+                SourceStatus::Unavailable | SourceStatus::ModeUnavailable
+            )
+    }
+
+    fn has_compatible_images(&self, mode: VideoGenerationMode) -> bool {
+        if self.image_count == 0 {
+            return false;
+        }
+        match mode {
+            VideoGenerationMode::MultiScreen => true,
+            VideoGenerationMode::SingleScreen(index) => {
+                self.single_compatible_count > 0 || self.screen_indices.contains(&index)
+            }
+        }
+    }
+
+    fn status_for_mode(&self, mode: VideoGenerationMode) -> SourceStatus {
+        if self.image_count == 0 {
+            SourceStatus::Unavailable
+        } else if self.has_compatible_images(mode) {
+            SourceStatus::Ready
+        } else {
+            SourceStatus::ModeUnavailable
+        }
+    }
+
+    fn output_path_for_mode(&self, mode: VideoGenerationMode) -> PathBuf {
+        output_path_for_mode(&self.output_path, mode)
     }
 
     fn display_label(&self) -> String {
@@ -646,6 +764,13 @@ impl VideoSource {
             SourceStatus::Ready => text.ready().to_string(),
             SourceStatus::Unavailable => {
                 format!("{}: {}", text.unavailable(), text.no_available_images())
+            }
+            SourceStatus::ModeUnavailable => {
+                format!(
+                    "{}: {}",
+                    text.unavailable(),
+                    text.current_mode_unavailable()
+                )
             }
             SourceStatus::Generating { progress } => {
                 let Some(progress) = progress else {
@@ -666,11 +791,56 @@ impl VideoSource {
     }
 }
 
-fn count_supported_images(input_dir: &Path) -> AppResult<usize> {
-    Ok(fs::read_dir(input_dir)?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| screenshot_format_for_path(path).is_some())
-        .count())
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct VideoSourceStats {
+    image_count: usize,
+    single_compatible_count: usize,
+    screen_indices: BTreeSet<u32>,
+}
+
+fn inspect_video_source(input_dir: &Path) -> AppResult<VideoSourceStats> {
+    let mut stats = VideoSourceStats::default();
+    for path in fs::read_dir(input_dir)?.filter_map(|entry| entry.ok().map(|entry| entry.path())) {
+        if screenshot_format_for_path(&path).is_none() {
+            continue;
+        }
+        stats.image_count += 1;
+        match parse_screenshot_file_name(&path) {
+            Some(ScreenshotName::MultiScreen { screen_index, .. }) => {
+                stats.screen_indices.insert(screen_index);
+            }
+            Some(ScreenshotName::Single { .. }) | None => {
+                stats.single_compatible_count += 1;
+            }
+        }
+    }
+    Ok(stats)
+}
+
+fn generation_mode_label(text: &Text, mode: VideoGenerationMode) -> String {
+    match mode {
+        VideoGenerationMode::MultiScreen => text.multi_screen_generation_mode().to_string(),
+        VideoGenerationMode::SingleScreen(index) => text.generation_screen_mode(index),
+    }
+}
+
+fn output_path_for_mode(output_path: &Path, mode: VideoGenerationMode) -> PathBuf {
+    let VideoGenerationMode::SingleScreen(index) = mode else {
+        return output_path.to_path_buf();
+    };
+    let stem = output_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("video");
+    let extension = output_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mp4");
+    let file_name = format!("{stem}-screen-{index:02}.{extension}");
+    output_path
+        .parent()
+        .map(|parent| parent.join(&file_name))
+        .unwrap_or_else(|| PathBuf::from(file_name))
 }
 
 fn unique_external_video_path(videos_dir: &Path, label: &str) -> PathBuf {
@@ -707,6 +877,48 @@ fn sanitize_file_stem(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn test_dir() -> PathBuf {
+        let sequence = TEST_DIR_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "screen-recorder-history-test-{}-{}-{}",
+            std::process::id(),
+            Local::now().format("%Y%m%d%H%M%S%.3f"),
+            sequence
+        ));
+        fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    fn test_paths(root: &Path) -> AppPaths {
+        let paths = AppPaths {
+            root: root.to_path_buf(),
+            config: root.join("config.json"),
+            screenshots: root.join("screenshots"),
+            videos: root.join("videos"),
+        };
+        fs::create_dir_all(&paths.screenshots).expect("create screenshots");
+        fs::create_dir_all(&paths.videos).expect("create videos");
+        paths
+    }
+
+    fn source_with_screens(id: u64, screens: &[u32], selected: bool) -> VideoSource {
+        VideoSource {
+            id,
+            label: format!("source-{id}"),
+            input_dir: PathBuf::from(format!("input-{id}")),
+            output_path: PathBuf::from(format!("video-{id}.mp4")),
+            image_count: screens.len(),
+            single_compatible_count: 0,
+            screen_indices: screens.iter().copied().collect(),
+            selected,
+            external: false,
+            status: SourceStatus::Ready,
+        }
+    }
 
     #[test]
     fn sanitize_file_stem_replaces_path_unfriendly_characters() {
@@ -715,5 +927,76 @@ mod tests {
             "Project_Demo_Folder"
         );
         assert_eq!(sanitize_file_stem("///"), "imported-folder");
+    }
+
+    #[test]
+    fn inspect_video_source_finds_screen_indices_and_single_compatible_images() {
+        let dir = test_dir();
+        fs::write(dir.join("14-03-22.184-screen-02-000512.png"), b"").expect("write");
+        fs::write(dir.join("14-03-22.184-screen-01-000512.png"), b"").expect("write");
+        fs::write(dir.join("14-03-23.184-000513.png"), b"").expect("write");
+        fs::write(dir.join("external.jpg"), b"").expect("write");
+        fs::write(dir.join("notes.txt"), b"").expect("write");
+
+        let stats = inspect_video_source(&dir).expect("inspect source");
+
+        assert_eq!(stats.image_count, 4);
+        assert_eq!(stats.single_compatible_count, 2);
+        assert_eq!(stats.screen_indices, BTreeSet::from([1, 2]));
+    }
+
+    #[test]
+    fn output_path_for_single_screen_mode_adds_screen_suffix() {
+        let output = output_path_for_mode(
+            Path::new("/tmp/2026-05-30.mp4"),
+            VideoGenerationMode::SingleScreen(2),
+        );
+
+        assert_eq!(output, PathBuf::from("/tmp/2026-05-30-screen-02.mp4"));
+        assert_eq!(
+            output_path_for_mode(
+                Path::new("/tmp/2026-05-30.mp4"),
+                VideoGenerationMode::MultiScreen
+            ),
+            PathBuf::from("/tmp/2026-05-30.mp4")
+        );
+    }
+
+    #[test]
+    fn generation_mode_change_clears_incompatible_selected_sources() {
+        let root = test_dir();
+        let paths = test_paths(&root);
+        let logger = Logger::new(&paths).expect("create logger");
+        let mut app = HistoryApp::new(paths, Config::default(), logger);
+        app.sources = vec![
+            source_with_screens(1, &[1], true),
+            source_with_screens(2, &[2], true),
+        ];
+
+        app.set_generation_mode(VideoGenerationMode::SingleScreen(1));
+
+        assert!(app.sources[0].selected);
+        assert!(app.sources[0].can_generate_for_mode(app.generation_mode));
+        assert!(!app.sources[1].selected);
+        assert!(matches!(
+            app.sources[1].status,
+            SourceStatus::ModeUnavailable
+        ));
+    }
+
+    #[test]
+    fn selected_jobs_use_current_generation_mode_and_output_path() {
+        let root = test_dir();
+        let paths = test_paths(&root);
+        let logger = Logger::new(&paths).expect("create logger");
+        let mut app = HistoryApp::new(paths, Config::default(), logger);
+        app.generation_mode = VideoGenerationMode::SingleScreen(2);
+        app.sources = vec![source_with_screens(7, &[2], true)];
+
+        let jobs = app.selected_jobs();
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].mode, VideoGenerationMode::SingleScreen(2));
+        assert_eq!(jobs[0].output_path, PathBuf::from("video-7-screen-02.mp4"));
     }
 }

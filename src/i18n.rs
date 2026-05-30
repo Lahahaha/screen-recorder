@@ -12,6 +12,11 @@ pub(crate) struct TextBundle {
     start: &'static str,
     pause: &'static str,
     interval_menu_prefix: &'static str,
+    capture_source_menu: &'static str,
+    capture_source_auto: &'static str,
+    refresh_capture_sources: &'static str,
+    screen_label_prefix: &'static str,
+    primary_screen_suffix: &'static str,
     generate_today_video: &'static str,
     open_output_dir: &'static str,
     language_menu: &'static str,
@@ -26,6 +31,11 @@ pub(crate) struct TextBundle {
     saved_capture_prefix: &'static str,
     failed_capture_prefix: &'static str,
     saved_to_prefix: &'static str,
+    saved_screenshots_prefix: &'static str,
+    saved_screenshots_suffix: &'static str,
+    partial_capture_failed_prefix: &'static str,
+    partial_capture_failed_suffix: &'static str,
+    skipped_duplicate_capture: &'static str,
     capture_success_title: &'static str,
     capture_failed_title: &'static str,
     output_dir_failed_title: &'static str,
@@ -33,6 +43,9 @@ pub(crate) struct TextBundle {
     refresh: &'static str,
     add_folder: &'static str,
     generate_selected: &'static str,
+    generation_mode: &'static str,
+    multi_screen_generation_mode: &'static str,
+    current_mode_unavailable: &'static str,
     cancel: &'static str,
     cancelling: &'static str,
     open_videos_folder: &'static str,
@@ -76,6 +89,11 @@ const ZH_CN_TEXT: TextBundle = TextBundle {
     start: "▶ 开始",
     pause: "⏸ 暂停",
     interval_menu_prefix: "⏱ 间隔 当前：",
+    capture_source_menu: "🖥️ 截屏范围",
+    capture_source_auto: "自动",
+    refresh_capture_sources: "刷新屏幕列表",
+    screen_label_prefix: "屏幕",
+    primary_screen_suffix: "主屏",
     generate_today_video: "🎬 生成今日视频",
     open_output_dir: "📁 打开保存目录",
     language_menu: "🌐 语言",
@@ -90,6 +108,11 @@ const ZH_CN_TEXT: TextBundle = TextBundle {
     saved_capture_prefix: "已保存",
     failed_capture_prefix: "失败",
     saved_to_prefix: "已保存到",
+    saved_screenshots_prefix: "已保存 ",
+    saved_screenshots_suffix: " 张截图",
+    partial_capture_failed_prefix: "失败屏幕 ",
+    partial_capture_failed_suffix: " 块",
+    skipped_duplicate_capture: "跳过重复截图",
     capture_success_title: "截图成功",
     capture_failed_title: "截图失败",
     output_dir_failed_title: "打开保存目录失败",
@@ -97,6 +120,9 @@ const ZH_CN_TEXT: TextBundle = TextBundle {
     refresh: "刷新",
     add_folder: "添加文件夹",
     generate_selected: "生成选中项",
+    generation_mode: "生成模式",
+    multi_screen_generation_mode: "多屏合成",
+    current_mode_unavailable: "当前模式不可生成",
     cancel: "取消",
     cancelling: "正在取消...",
     open_videos_folder: "打开视频目录",
@@ -138,6 +164,11 @@ const EN_TEXT: TextBundle = TextBundle {
     start: "▶ Start",
     pause: "⏸ Pause",
     interval_menu_prefix: "⏱ Interval: ",
+    capture_source_menu: "🖥️ Capture Source",
+    capture_source_auto: "Auto",
+    refresh_capture_sources: "Refresh Screens",
+    screen_label_prefix: "Screen",
+    primary_screen_suffix: "Primary",
     generate_today_video: "🎬 Generate Today's Video",
     open_output_dir: "📁 Open Save Folder",
     language_menu: "🌐 Language",
@@ -152,6 +183,11 @@ const EN_TEXT: TextBundle = TextBundle {
     saved_capture_prefix: "Saved",
     failed_capture_prefix: "Failed",
     saved_to_prefix: "Saved to",
+    saved_screenshots_prefix: "Saved ",
+    saved_screenshots_suffix: " screenshots",
+    partial_capture_failed_prefix: "Failed screens: ",
+    partial_capture_failed_suffix: "",
+    skipped_duplicate_capture: "Skipped duplicate screenshot",
     capture_success_title: "Screenshot Saved",
     capture_failed_title: "Screenshot Failed",
     output_dir_failed_title: "Failed to Open Save Folder",
@@ -159,6 +195,9 @@ const EN_TEXT: TextBundle = TextBundle {
     refresh: "Refresh",
     add_folder: "Add Folder",
     generate_selected: "Generate Selected",
+    generation_mode: "Generation Mode",
+    multi_screen_generation_mode: "Multi-screen",
+    current_mode_unavailable: "Not available for this mode",
     cancel: "Cancel",
     cancelling: "Cancelling...",
     open_videos_folder: "Open Videos Folder",
@@ -219,6 +258,36 @@ impl Text {
         format!("{}{seconds}s", self.bundle.interval_menu_prefix)
     }
 
+    pub(crate) fn capture_source_menu(&self) -> &'static str {
+        self.bundle.capture_source_menu
+    }
+
+    pub(crate) fn capture_source_auto(&self) -> &'static str {
+        self.bundle.capture_source_auto
+    }
+
+    pub(crate) fn refresh_capture_sources(&self) -> &'static str {
+        self.bundle.refresh_capture_sources
+    }
+
+    pub(crate) fn screen_label(
+        &self,
+        index: u32,
+        is_primary: bool,
+        width: u32,
+        height: u32,
+    ) -> String {
+        let primary = if is_primary {
+            format!(", {}", self.bundle.primary_screen_suffix)
+        } else {
+            String::new()
+        };
+        format!(
+            "{} {index:02} ({width}x{height}{primary})",
+            self.bundle.screen_label_prefix
+        )
+    }
+
     pub(crate) fn generate_today_video(&self) -> &'static str {
         self.bundle.generate_today_video
     }
@@ -261,6 +330,26 @@ impl Text {
         format!("{} {}", self.bundle.saved_capture_prefix, path.display())
     }
 
+    pub(crate) fn saved_screenshots(&self, count: usize, dir: &Path) -> String {
+        format!(
+            "{}{count}{}: {}",
+            self.bundle.saved_screenshots_prefix,
+            self.bundle.saved_screenshots_suffix,
+            dir.display()
+        )
+    }
+
+    pub(crate) fn partial_capture_failed(&self, failed: usize, total: usize) -> String {
+        format!(
+            "{}{failed}/{total}{}",
+            self.bundle.partial_capture_failed_prefix, self.bundle.partial_capture_failed_suffix
+        )
+    }
+
+    pub(crate) fn skipped_duplicate_capture(&self) -> &'static str {
+        self.bundle.skipped_duplicate_capture
+    }
+
     pub(crate) fn failed_capture(&self, message: &str) -> String {
         format!("{}: {message}", self.bundle.failed_capture_prefix)
     }
@@ -295,6 +384,22 @@ impl Text {
 
     pub(crate) fn generate_selected(&self) -> &'static str {
         self.bundle.generate_selected
+    }
+
+    pub(crate) fn generation_mode(&self) -> &'static str {
+        self.bundle.generation_mode
+    }
+
+    pub(crate) fn multi_screen_generation_mode(&self) -> &'static str {
+        self.bundle.multi_screen_generation_mode
+    }
+
+    pub(crate) fn generation_screen_mode(&self, index: u32) -> String {
+        format!("{} {index:02}", self.bundle.screen_label_prefix)
+    }
+
+    pub(crate) fn current_mode_unavailable(&self) -> &'static str {
+        self.bundle.current_mode_unavailable
     }
 
     pub(crate) fn cancel(&self) -> &'static str {

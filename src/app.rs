@@ -1,6 +1,11 @@
 use crate::{
-    capture::capture_once,
-    config::{cloned_config, load_config, save_current_config, Config, Language},
+    capture::{
+        available_screen_infos, capture_once, validate_capture_mode_for_screens, CaptureReport,
+        CaptureScreenInfo,
+    },
+    config::{
+        cloned_config, load_config, save_config, save_current_config, CaptureMode, Config, Language,
+    },
     i18n::Text,
     logging::Logger,
     paths::AppPaths,
@@ -13,7 +18,7 @@ use std::{
     any::Any,
     error::Error,
     panic::{self, AssertUnwindSafe},
-    path::PathBuf,
+    path::Path,
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -33,12 +38,12 @@ use winit::{
 pub(crate) type AppResult<T> = Result<T, Box<dyn Error>>;
 
 enum AppEvent {
-    CaptureSucceeded { path: PathBuf, notify: bool },
+    CaptureSucceeded { report: CaptureReport, notify: bool },
     CaptureFailed { message: String, notify: bool },
 }
 
 enum LastCapture {
-    Saved(PathBuf),
+    Saved(CaptureReport),
     Failed(String),
 }
 
@@ -93,7 +98,9 @@ struct AppState {
 pub(crate) fn run() -> AppResult<()> {
     let paths = AppPaths::new()?;
     let logger = Logger::new(&paths)?;
-    let initial_config = load_config(&paths, &logger)?;
+    let mut initial_config = load_config(&paths, &logger)?;
+    normalize_startup_capture_mode(&paths, &mut initial_config, &logger);
+    platform::request_screen_capture_permission(&logger);
     let auto_start = initial_config.auto_start;
     let config = Arc::new(Mutex::new(initial_config));
     let running = Arc::new(AtomicBool::new(auto_start));
@@ -170,7 +177,7 @@ pub(crate) fn run() -> AppResult<()> {
                 }
             }
             Event::AboutToWait => {
-                if let Some(state) = tray_state.as_ref() {
+                if let Some(state) = tray_state.as_mut() {
                     for event in app_event_rx.try_iter() {
                         handle_app_event(
                             event,
@@ -191,7 +198,7 @@ pub(crate) fn run() -> AppResult<()> {
                         if let Some(command) = tray::command_for_event(&event, &state.controls) {
                             handle_app_command(
                                 command,
-                                &state.controls,
+                                &mut state.controls,
                                 &app_state,
                                 event_loop,
                                 &mut saved_on_quit,
@@ -230,7 +237,7 @@ pub(crate) fn run() -> AppResult<()> {
 
 fn handle_app_command(
     command: AppCommand,
-    controls: &TrayControls,
+    controls: &mut TrayControls,
     state: &AppState,
     event_loop: &winit::event_loop::EventLoopWindowTarget<()>,
     saved_on_quit: &mut bool,
@@ -257,6 +264,18 @@ fn handle_app_command(
                 &state.config,
                 &state.logger,
             );
+        }
+        AppCommand::SetCaptureMode(capture_mode) => {
+            set_capture_mode(
+                capture_mode,
+                controls,
+                &state.paths,
+                &state.config,
+                &state.logger,
+            );
+        }
+        AppCommand::RefreshCaptureSources => {
+            refresh_capture_sources(controls, &state.paths, &state.config, &state.logger);
         }
         AppCommand::SetLanguage(language) => {
             set_language(
@@ -315,6 +334,41 @@ fn open_history_window() -> AppResult<()> {
     Ok(())
 }
 
+fn normalize_startup_capture_mode(paths: &AppPaths, config: &mut Config, logger: &Logger) {
+    let screen_infos = match available_screen_infos() {
+        Ok(screen_infos) => screen_infos,
+        Err(error) => {
+            logger.warn(format!("启动时刷新截屏范围失败，保留当前配置: {error}"));
+            return;
+        }
+    };
+    if reconcile_capture_mode_with_screens(config, &screen_infos, logger) {
+        if let Err(error) = save_config(paths, config) {
+            logger.error(format!("保存启动截屏范围回退配置失败: {error}"));
+        }
+    }
+}
+
+fn reconcile_capture_mode_with_screens(
+    config: &mut Config,
+    screen_infos: &[CaptureScreenInfo],
+    logger: &Logger,
+) -> bool {
+    let configured_mode = config.capture_mode;
+    let effective_mode = validate_capture_mode_for_screens(configured_mode, screen_infos);
+    if effective_mode == configured_mode {
+        return false;
+    }
+
+    logger.warn(format!(
+        "启动时所选截屏范围 {} 不可用，已回退到 {}",
+        configured_mode.config_value(),
+        effective_mode.config_value()
+    ));
+    config.capture_mode = effective_mode;
+    true
+}
+
 fn set_interval(
     seconds: u64,
     controls: &TrayControls,
@@ -346,7 +400,8 @@ fn set_language(
         Ok(mut config_guard) => {
             config_guard.language = language;
             let interval = config_guard.interval;
-            tray::update_menu_labels(controls, is_running, interval, language);
+            let capture_mode = config_guard.capture_mode;
+            tray::update_menu_labels(controls, is_running, interval, capture_mode, language);
             drop(config_guard);
             save_current_config(paths, config, logger);
         }
@@ -368,8 +423,11 @@ fn capture_once_in_thread(
         logger.clone(),
         move || match cloned_config(&config) {
             Ok(config) => match capture_once(&paths, &config, &logger) {
-                Ok(path) => {
-                    let _ = app_events.send(AppEvent::CaptureSucceeded { path, notify: true });
+                Ok(report) => {
+                    let _ = app_events.send(AppEvent::CaptureSucceeded {
+                        report,
+                        notify: true,
+                    });
                 }
                 Err(error) => {
                     logger.error(format!("手动截屏失败: {error}"));
@@ -508,9 +566,9 @@ fn run_capture_loop(
 
                     if now >= next_capture {
                         match capture_once(&paths, &config, &logger) {
-                            Ok(path) => {
+                            Ok(report) => {
                                 let _ = app_events.send(AppEvent::CaptureSucceeded {
-                                    path,
+                                    report,
                                     notify: false,
                                 });
                             }
@@ -578,16 +636,13 @@ fn handle_app_event(
     logger: &Logger,
 ) {
     match event {
-        AppEvent::CaptureSucceeded { path, notify } => {
-            *screenshot_count += 1;
-            *last_capture = Some(LastCapture::Saved(path.clone()));
+        AppEvent::CaptureSucceeded { report, notify } => {
+            *screenshot_count += report.saved_count() as u64;
+            *last_capture = Some(LastCapture::Saved(report.clone()));
             if notify {
                 let text = Text::new(current_language(config, logger));
-                platform::notify(
-                    text.capture_success_title(),
-                    &text.saved_to(&path),
-                    logger.clone(),
-                );
+                let message = capture_report_message(&text, &report);
+                platform::notify(text.capture_success_title(), &message, logger.clone());
             }
         }
         AppEvent::CaptureFailed { message, notify } => {
@@ -612,7 +667,7 @@ fn update_tray_tooltip(
     });
     let text = Text::new(config.language);
     let last_capture = last_capture.map(|capture| match capture {
-        LastCapture::Saved(path) => text.saved_capture(path),
+        LastCapture::Saved(report) => capture_report_message(&text, report),
         LastCapture::Failed(message) => text.failed_capture(message),
     });
     let tooltip = tray::status_tooltip(
@@ -629,6 +684,95 @@ fn update_tray_tooltip(
     }
 }
 
+fn set_capture_mode(
+    capture_mode: CaptureMode,
+    controls: &mut TrayControls,
+    paths: &AppPaths,
+    config: &Arc<Mutex<Config>>,
+    logger: &Logger,
+) {
+    match config.lock() {
+        Ok(mut config_guard) => {
+            let language = config_guard.language;
+            let effective_mode =
+                refresh_capture_sources_for_mode(controls, capture_mode, language, logger);
+            if effective_mode != capture_mode {
+                logger.warn(format!(
+                    "所选截屏范围不可用，已回退到 {}",
+                    effective_mode.config_value()
+                ));
+            }
+            config_guard.capture_mode = effective_mode;
+            let language = config_guard.language;
+            tray::update_capture_source_menu(controls, effective_mode, language);
+            drop(config_guard);
+            save_current_config(paths, config, logger);
+        }
+        Err(error) => logger.error(format!("更新截屏范围失败: {error}")),
+    }
+}
+
+fn refresh_capture_sources(
+    controls: &mut TrayControls,
+    paths: &AppPaths,
+    config: &Arc<Mutex<Config>>,
+    logger: &Logger,
+) {
+    match config.lock() {
+        Ok(mut config_guard) => {
+            let capture_mode = config_guard.capture_mode;
+            let language = config_guard.language;
+            let effective_mode =
+                refresh_capture_sources_for_mode(controls, capture_mode, language, logger);
+            if effective_mode != capture_mode {
+                config_guard.capture_mode = effective_mode;
+                drop(config_guard);
+                save_current_config(paths, config, logger);
+            }
+        }
+        Err(error) => logger.error(format!("刷新截屏范围失败: {error}")),
+    }
+}
+
+fn refresh_capture_sources_for_mode(
+    controls: &mut TrayControls,
+    capture_mode: CaptureMode,
+    language: Language,
+    logger: &Logger,
+) -> CaptureMode {
+    match tray::refresh_capture_source_menu(controls, capture_mode, language) {
+        Ok(effective_mode) => effective_mode,
+        Err(error) => {
+            logger.error(format!("刷新截屏范围失败: {error}"));
+            tray::update_capture_source_menu(controls, capture_mode, language);
+            capture_mode
+        }
+    }
+}
+
+fn capture_report_message(text: &Text, report: &CaptureReport) -> String {
+    if report.skipped_duplicate {
+        return text.skipped_duplicate_capture().to_string();
+    }
+    let mut message = if report.saved_count() == 1 {
+        report
+            .saved_paths
+            .first()
+            .map(|path| text.saved_capture(path))
+            .unwrap_or_else(|| text.skipped_duplicate_capture().to_string())
+    } else {
+        let dir = report.output_dir().unwrap_or_else(|| Path::new("."));
+        text.saved_screenshots(report.saved_count(), dir)
+    };
+    if report.failed_screen_count > 0 {
+        message.push_str("; ");
+        message.push_str(
+            &text.partial_capture_failed(report.failed_screen_count, report.target_screen_count),
+        );
+    }
+    message
+}
+
 fn current_language(config: &Arc<Mutex<Config>>, logger: &Logger) -> Language {
     current_config_or_default(config, logger).language
 }
@@ -643,6 +787,34 @@ fn current_config_or_default(config: &Arc<Mutex<Config>>, logger: &Logger) -> Co
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static TEST_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn test_dir() -> PathBuf {
+        let sequence = TEST_DIR_SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "screen-recorder-app-test-{}-{}",
+            std::process::id(),
+            sequence
+        ));
+        fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    fn test_logger(root: &Path) -> Logger {
+        let paths = AppPaths {
+            root: root.to_path_buf(),
+            config: root.join("config.json"),
+            screenshots: root.join("screenshots"),
+            videos: root.join("videos"),
+        };
+        Logger::new(&paths).expect("create logger")
+    }
 
     #[test]
     fn panic_payload_message_reads_str_payload() {
@@ -656,5 +828,55 @@ mod tests {
         let payload: &(dyn Any + Send) = &"boom".to_string();
 
         assert_eq!(panic_payload_message(payload), "boom");
+    }
+
+    #[test]
+    fn startup_capture_mode_falls_back_when_saved_screen_is_missing() {
+        let root = test_dir();
+        let logger = test_logger(&root);
+        let mut config = Config {
+            capture_mode: CaptureMode::Screen(2),
+            ..Config::default()
+        };
+        let screen_infos = vec![CaptureScreenInfo {
+            index: 1,
+            id: 10,
+            x: 0,
+            y: 0,
+            width: 1280,
+            height: 720,
+            scale_factor: 1.0,
+            is_primary: true,
+        }];
+
+        let changed = reconcile_capture_mode_with_screens(&mut config, &screen_infos, &logger);
+
+        assert!(changed);
+        assert_eq!(config.capture_mode, CaptureMode::Auto);
+    }
+
+    #[test]
+    fn startup_capture_mode_keeps_available_saved_screen() {
+        let root = test_dir();
+        let logger = test_logger(&root);
+        let mut config = Config {
+            capture_mode: CaptureMode::Screen(2),
+            ..Config::default()
+        };
+        let screen_infos = vec![CaptureScreenInfo {
+            index: 2,
+            id: 20,
+            x: 1280,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale_factor: 1.0,
+            is_primary: false,
+        }];
+
+        let changed = reconcile_capture_mode_with_screens(&mut config, &screen_infos, &logger);
+
+        assert!(!changed);
+        assert_eq!(config.capture_mode, CaptureMode::Screen(2));
     }
 }

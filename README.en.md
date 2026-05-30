@@ -11,7 +11,7 @@ A lightweight screen activity recorder that saves timed screenshots and turns th
 - 📷 **Manual capture**: Take an immediate screenshot from the tray menu.
 - 🎬 **Today's video**: Generate a time-lapse video from today's screenshots.
 - 🗂️ **History video window**: List historical screenshot folders or import external folders to generate videos.
-- 🧩 **Multi-screen video foundation**: The video generator can group supported multi-screen batches into one composed frame. The built-in capture flow currently captures one screen.
+- 🧩 **Multi-screen capture and composition**: Auto-detects screen count, saves multi-screen batches, and generates composed videos.
 - 🌐 **Chinese/English UI**: Tray menu, tooltip, notifications, and the history window support manual language switching.
 - 🔔 **User feedback**: Capture, video generation, and failure cases are surfaced through notifications or status text.
 - 📁 **Auto organization**: Screenshots are grouped by date, and videos are saved under `videos`.
@@ -49,6 +49,7 @@ Download the latest version from [Releases](https://github.com/Lahahaha/screen-r
 | 📷 Capture Now | Save one screenshot immediately |
 | ▶ Start / ⏸ Pause | Start or pause timed capture |
 | ⏱ Interval | Change the capture interval |
+| 🖥️ Capture Source | Use automatic multi-screen capture, or pin capture to one screen |
 | 🎬 Generate Today's Video | Generate a video from today's screenshots |
 | History Videos | Open the history video window |
 | 📁 Open Save Folder | Open the folder containing screenshots, videos, and config |
@@ -62,6 +63,7 @@ The history video window is used to regenerate videos from historical screenshot
 - Automatically lists date folders under `screenshots`.
 - Supports adding external folders.
 - Supports selecting multiple folders and generating videos one by one.
+- Generation mode can use multi-screen composition or only one screen such as `screen-01` or `screen-02`.
 - Shows progress during generation and lets you cancel the current batch.
 - Empty folders and folders without images are shown as unavailable.
 - A failed item does not stop the remaining selected items.
@@ -109,7 +111,8 @@ Settings are stored in `config.json`. Missing fields use defaults.
   "dedup": false,
   "auto_start": false,
   "video_codec": "h264",
-  "language": "zh-CN"
+  "language": "zh-CN",
+  "capture_mode": "auto"
 }
 ```
 
@@ -123,15 +126,20 @@ Settings are stored in `config.json`. Missing fields use defaults.
 | `auto_start` | `false` | Start timed capture when the app launches |
 | `video_codec` | `"h264"` | Video codec: `"h264"` or `"h265"` |
 | `language` | `"zh-CN"` | UI language: `"zh-CN"` or `"en"` |
+| `capture_mode` | `"auto"` | Capture source: `"auto"`, `"screen-01"`, `"screen-02"`, etc. |
 
 ## Video Generation Rules
 
-- The built-in capture flow currently saves single-screen files named `HH-MM-SS.mmm-000123.png` or `.jpg`.
+- In auto mode, single-screen machines keep the legacy file name: `HH-MM-SS.mmm-000123.png` or `.jpg`.
+- In auto mode, multi-screen machines save one image per successful screen in the same batch: `HH-MM-SS.mmm-screen-01-000123.png`, `screen-02`, etc., plus `.screens.json`.
+- Users can also pin capture to one specific screen from the tray menu. That mode keeps the legacy single-screen file name.
+- If one screen fails during a multi-screen batch, successful screens are still saved; metadata records only the successful screens.
 - Non-image files are ignored.
 - External images with non-standard names can still be used as normal single-image frames.
 - Broken images are skipped. If no readable image remains, generation fails with a clear error.
 - Single-screen videos keep the source image size, with width/height adjusted to even values when needed for video encoding.
-- Multi-screen batch files are grouped by names like `HH-MM-SS.mmm-screen-01-000123.png`, and `.screens.json` geometry metadata is preferred when present.
+- Multi-screen batch files are grouped by timestamp and sequence, and `.screens.json` geometry metadata is preferred when present.
+- The history video window can switch to single-screen generation; single-screen outputs add a `-screen-XX` suffix.
 - Multi-screen composition is capped at `7680x4320`.
 
 ## Build from Source

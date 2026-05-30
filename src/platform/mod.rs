@@ -19,6 +19,7 @@ trait Platform {
     fn notify(title: &str, message: &str, logger: Logger);
     fn open_path(path: &Path) -> crate::app::AppResult<()>;
     fn hide_console(cmd: &mut Command);
+    fn request_screen_capture_permission(logger: &Logger);
 }
 
 #[cfg(target_os = "macos")]
@@ -46,6 +47,10 @@ impl Platform for CurrentPlatform {
     }
 
     fn hide_console(_cmd: &mut Command) {}
+
+    fn request_screen_capture_permission(logger: &Logger) {
+        macos::request_screen_capture_permission(logger);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -69,6 +74,8 @@ impl Platform for CurrentPlatform {
     fn hide_console(cmd: &mut Command) {
         windows::hide_console(cmd);
     }
+
+    fn request_screen_capture_permission(_logger: &Logger) {}
 }
 
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> crate::app::AppResult<()> {
@@ -89,6 +96,10 @@ pub(crate) fn open_path(path: &Path) -> crate::app::AppResult<()> {
 
 pub(crate) fn hide_console(cmd: &mut Command) {
     CurrentPlatform::hide_console(cmd);
+}
+
+pub(crate) fn request_screen_capture_permission(logger: &Logger) {
+    CurrentPlatform::request_screen_capture_permission(logger);
 }
 
 pub(crate) fn notify_screen_capture_failure(logger: &Logger, language: Language) {

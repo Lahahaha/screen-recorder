@@ -20,6 +20,7 @@ pub(crate) struct Config {
     pub(crate) auto_start: bool,
     pub(crate) video_codec: VideoCodec,
     pub(crate) language: Language,
+    pub(crate) capture_mode: CaptureMode,
 }
 
 impl Default for Config {
@@ -33,7 +34,60 @@ impl Default for Config {
             auto_start: false,
             video_codec: VideoCodec::H264,
             language: Language::ZhCn,
+            capture_mode: CaptureMode::Auto,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum CaptureMode {
+    #[default]
+    Auto,
+    Screen(u32),
+}
+
+impl CaptureMode {
+    pub(crate) fn from_config(value: &str) -> Self {
+        let value = value.trim().to_ascii_lowercase();
+        if value == "auto" {
+            return Self::Auto;
+        }
+        let Some(index) = value
+            .strip_prefix("screen-")
+            .and_then(|index| index.parse::<u32>().ok())
+        else {
+            return Self::Auto;
+        };
+        if index == 0 {
+            Self::Auto
+        } else {
+            Self::Screen(index)
+        }
+    }
+
+    pub(crate) fn config_value(self) -> String {
+        match self {
+            Self::Auto => "auto".to_string(),
+            Self::Screen(index) => format!("screen-{index:02}"),
+        }
+    }
+}
+
+impl Serialize for CaptureMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.config_value())
+    }
+}
+
+impl<'de> Deserialize<'de> for CaptureMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(|value| Self::from_config(&value))
     }
 }
 
@@ -303,6 +357,20 @@ mod tests {
         assert!(!config.auto_start);
         assert_eq!(config.video_codec, VideoCodec::H264);
         assert_eq!(config.language, Language::ZhCn);
+        assert_eq!(config.capture_mode, CaptureMode::Auto);
+    }
+
+    #[test]
+    fn capture_mode_parses_known_values() {
+        assert_eq!(CaptureMode::from_config("auto"), CaptureMode::Auto);
+        assert_eq!(
+            CaptureMode::from_config("screen-01"),
+            CaptureMode::Screen(1)
+        );
+        assert_eq!(CaptureMode::from_config("screen-2"), CaptureMode::Screen(2));
+        assert_eq!(CaptureMode::from_config("screen-00"), CaptureMode::Auto);
+        assert_eq!(CaptureMode::from_config("unknown"), CaptureMode::Auto);
+        assert_eq!(CaptureMode::Screen(12).config_value(), "screen-12");
     }
 
     #[test]

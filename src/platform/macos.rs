@@ -9,6 +9,12 @@ use std::{
     thread,
 };
 
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
     rename_with_context(source, destination, "替换文件失败")?;
     Ok(())
@@ -43,6 +49,28 @@ pub(crate) fn open_path(path: &Path) -> AppResult<()> {
         );
     }
     Ok(())
+}
+
+pub(crate) fn request_screen_capture_permission(logger: &Logger) {
+    if has_screen_capture_access() {
+        logger.info("macOS 屏幕录制权限已授权");
+        return;
+    }
+
+    logger.info("请求 macOS 屏幕录制权限");
+    if request_screen_capture_access() {
+        logger.info("macOS 屏幕录制权限已授权");
+    } else {
+        logger.warn("macOS 屏幕录制权限未授权，用户可能需要在系统设置中授权并重启应用");
+    }
+}
+
+fn has_screen_capture_access() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+fn request_screen_capture_access() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
 }
 
 fn escape_applescript_string(value: &str) -> String {

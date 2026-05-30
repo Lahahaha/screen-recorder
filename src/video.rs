@@ -45,6 +45,20 @@ pub(crate) enum VideoGenerationProgress {
     Replacing,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum VideoGenerationMode {
+    #[default]
+    MultiScreen,
+    SingleScreen(u32),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VideoGenerationOptions {
+    pub(crate) fps: u32,
+    pub(crate) video_codec: VideoCodec,
+    pub(crate) mode: VideoGenerationMode,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct VideoGenerationCancelToken {
     cancelled: Arc<AtomicBool>,
@@ -144,6 +158,31 @@ pub(crate) fn generate_video_from_dir_with_control<F>(
 where
     F: Fn(VideoGenerationProgress),
 {
+    generate_video_from_dir_with_mode_and_control(
+        input_dir,
+        output,
+        VideoGenerationOptions {
+            fps,
+            video_codec,
+            mode: VideoGenerationMode::MultiScreen,
+        },
+        logger,
+        progress,
+        cancel_token,
+    )
+}
+
+pub(crate) fn generate_video_from_dir_with_mode_and_control<F>(
+    input_dir: &Path,
+    output: &Path,
+    options: VideoGenerationOptions,
+    logger: &Logger,
+    progress: F,
+    cancel_token: &VideoGenerationCancelToken,
+) -> AppResult<VideoGenerationReport>
+where
+    F: Fn(VideoGenerationProgress),
+{
     let total_start = Instant::now();
     check_cancelled(cancel_token)?;
     progress(VideoGenerationProgress::Scanning);
@@ -159,7 +198,7 @@ where
     ));
     check_cancelled(cancel_token)?;
     let group_start = Instant::now();
-    let frame_groups = choose_video_frame_groups(images)?;
+    let frame_groups = choose_video_frame_groups_for_mode(images, options.mode)?;
     logger.info(format!(
         "视频生成计时: 解析/分组，帧组数: {}，耗时: {}",
         frame_groups.len(),
@@ -184,8 +223,8 @@ where
     let encode_start = Instant::now();
     let sequence_report = encode_frame_sequence(
         &frame_groups,
-        fps,
-        video_codec,
+        options.fps,
+        options.video_codec,
         &temp_output,
         logger,
         &progress,
@@ -569,7 +608,15 @@ struct FfmpegTarget<'a> {
     temp_output: &'a Path,
 }
 
+#[cfg(test)]
 fn choose_video_frame_groups(images: Vec<PathBuf>) -> AppResult<Vec<VideoFrameGroup>> {
+    choose_video_frame_groups_for_mode(images, VideoGenerationMode::MultiScreen)
+}
+
+fn choose_video_frame_groups_for_mode(
+    images: Vec<PathBuf>,
+    mode: VideoGenerationMode,
+) -> AppResult<Vec<VideoFrameGroup>> {
     let mut images = images
         .into_iter()
         .filter(|path| screenshot_format_for_path(path).is_some())
@@ -604,12 +651,27 @@ fn choose_video_frame_groups(images: Vec<PathBuf>) -> AppResult<Vec<VideoFrameGr
                 timestamp,
                 screen_index,
                 sequence,
-            }) => {
-                multi_screen
-                    .entry((timestamp, sequence))
-                    .or_default()
-                    .push((screen_index, image));
-            }
+            }) => match mode {
+                VideoGenerationMode::MultiScreen => {
+                    multi_screen
+                        .entry((timestamp, sequence))
+                        .or_default()
+                        .push((screen_index, image));
+                }
+                VideoGenerationMode::SingleScreen(target_index) if screen_index == target_index => {
+                    groups.insert(
+                        format!("{timestamp}-{sequence:06}-screen-{screen_index:02}-single"),
+                        VideoFrameGroup {
+                            images: vec![FrameImage {
+                                path: image,
+                                screen_index: None,
+                                geometry: None,
+                            }],
+                        },
+                    );
+                }
+                VideoGenerationMode::SingleScreen(_) => {}
+            },
             None => {
                 let key = image.to_string_lossy().to_string();
                 groups.insert(
@@ -634,7 +696,20 @@ fn choose_video_frame_groups(images: Vec<PathBuf>) -> AppResult<Vec<VideoFrameGr
         );
     }
 
-    Ok(groups.into_values().collect())
+    let groups = groups.into_values().collect::<Vec<_>>();
+    if groups.is_empty() {
+        return match mode {
+            VideoGenerationMode::SingleScreen(index) => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("所选屏幕 screen-{index:02} 没有可用截图"),
+            )
+            .into()),
+            VideoGenerationMode::MultiScreen => {
+                Err(io::Error::new(io::ErrorKind::NotFound, "今天还没有可用截图").into())
+            }
+        };
+    }
+    Ok(groups)
 }
 
 fn ordered_multi_screen_images(mut entries: Vec<(u32, PathBuf)>) -> Vec<FrameImage> {
@@ -1414,6 +1489,80 @@ mod tests {
                 PathBuf::from("14-03-22.184-screen-02-000512.png"),
             ]]
         );
+    }
+
+    #[test]
+    fn single_screen_mode_keeps_only_selected_screen_as_single_frames() {
+        let groups = choose_video_frame_groups_for_mode(
+            vec![
+                PathBuf::from("14-03-22.184-screen-02-000512.png"),
+                PathBuf::from("14-03-22.184-screen-01-000512.png"),
+                PathBuf::from("14-03-23.184-screen-01-000513.png"),
+            ],
+            VideoGenerationMode::SingleScreen(1),
+        )
+        .expect("choose frame groups");
+
+        assert_eq!(
+            group_paths(&groups),
+            vec![
+                vec![PathBuf::from("14-03-22.184-screen-01-000512.png")],
+                vec![PathBuf::from("14-03-23.184-screen-01-000513.png")]
+            ]
+        );
+        assert!(groups
+            .iter()
+            .flat_map(|group| group.images.iter())
+            .all(|image| image.screen_index.is_none()));
+    }
+
+    #[test]
+    fn single_screen_mode_can_select_second_screen() {
+        let groups = choose_video_frame_groups_for_mode(
+            vec![
+                PathBuf::from("14-03-22.184-screen-01-000512.png"),
+                PathBuf::from("14-03-22.184-screen-02-000512.png"),
+            ],
+            VideoGenerationMode::SingleScreen(2),
+        )
+        .expect("choose frame groups");
+
+        assert_eq!(
+            group_paths(&groups),
+            vec![vec![PathBuf::from("14-03-22.184-screen-02-000512.png")]]
+        );
+    }
+
+    #[test]
+    fn single_screen_mode_keeps_legacy_and_external_images() {
+        let groups = choose_video_frame_groups_for_mode(
+            vec![
+                PathBuf::from("14-03-22.184-screen-01-000512.png"),
+                PathBuf::from("14-03-23.184-000513.png"),
+                PathBuf::from("external.png"),
+            ],
+            VideoGenerationMode::SingleScreen(2),
+        )
+        .expect("choose frame groups");
+
+        assert_eq!(
+            group_paths(&groups),
+            vec![
+                vec![PathBuf::from("14-03-23.184-000513.png")],
+                vec![PathBuf::from("external.png")]
+            ]
+        );
+    }
+
+    #[test]
+    fn single_screen_mode_rejects_missing_screen_without_compatible_single_images() {
+        let error = choose_video_frame_groups_for_mode(
+            vec![PathBuf::from("14-03-22.184-screen-01-000512.png")],
+            VideoGenerationMode::SingleScreen(2),
+        )
+        .expect_err("missing screen should fail");
+
+        assert!(error.to_string().contains("screen-02"));
     }
 
     #[test]
