@@ -4,6 +4,7 @@ use crate::{
     logging::Logger,
     paths::AppPaths,
     platform,
+    screenshot_naming::screenshot_file_name,
     temp::TempFileCleanup,
 };
 use chrono::Local;
@@ -68,7 +69,7 @@ pub(crate) fn capture_once(
     }
 
     let sequence = SCREENSHOT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    let output = output_dir.join(format!("{now}-{sequence:06}.{}", format.extension()));
+    let output = output_dir.join(screenshot_file_name(&now, None, sequence, format));
     save_screenshot_atomic(&image, format, &output)?;
 
     store_screenshot_fingerprint(screenshot_hash, output.clone())?;
@@ -175,19 +176,10 @@ fn rgba_buffer_hash(image: &DynamicImage) -> u64 {
     hasher.finish()
 }
 
-pub(crate) fn screenshot_format_for_path(path: &Path) -> Option<ScreenshotFormat> {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .and_then(|extension| match extension.to_ascii_lowercase().as_str() {
-            "png" => Some(ScreenshotFormat::Png),
-            "jpg" | "jpeg" => Some(ScreenshotFormat::Jpg),
-            _ => None,
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screenshot_naming::screenshot_format_for_path;
     use chrono::Local;
 
     fn test_dir() -> PathBuf {

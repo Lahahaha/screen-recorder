@@ -14,6 +14,7 @@ use std::{
     error::Error,
     panic::{self, AssertUnwindSafe},
     path::PathBuf,
+    process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -274,6 +275,17 @@ fn handle_app_command(
             &state.workers,
             state.logger.clone(),
         ),
+        AppCommand::OpenHistoryVideos => {
+            if let Err(error) = open_history_window() {
+                state.logger.error(format!("打开历史视频窗口失败: {error}"));
+                let text = Text::new(current_language(&state.config, &state.logger));
+                platform::notify(
+                    text.video_failed_title(),
+                    &format!("{error}"),
+                    state.logger.clone(),
+                );
+            }
+        }
         AppCommand::OpenOutputDir => {
             if let Err(error) = platform::open_path(&state.paths.root) {
                 let text = Text::new(current_language(&state.config, &state.logger));
@@ -292,6 +304,15 @@ fn handle_app_command(
             event_loop.exit();
         }
     }
+}
+
+fn open_history_window() -> AppResult<()> {
+    let executable = std::env::current_exe()?;
+    let mut command = Command::new(executable);
+    command.arg("--history");
+    platform::hide_console(&mut command);
+    command.spawn()?;
+    Ok(())
 }
 
 fn set_interval(

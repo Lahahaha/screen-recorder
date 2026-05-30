@@ -19,6 +19,7 @@ pub(crate) struct TrayControls {
     interval_menu: Submenu,
     interval_items: Vec<(u64, CheckMenuItem)>,
     generate_video: MenuItem,
+    history_videos: MenuItem,
     open_output_dir: MenuItem,
     language_menu: Submenu,
     language_items: Vec<(Language, CheckMenuItem)>,
@@ -37,6 +38,7 @@ pub(crate) enum AppCommand {
     SetInterval(u64),
     SetLanguage(Language),
     GenerateTodayVideo,
+    OpenHistoryVideos,
     OpenOutputDir,
     Quit,
 }
@@ -71,6 +73,7 @@ fn build_menu(current_interval: u64, language: Language) -> AppResult<TrayContro
     let start_pause = MenuItem::new(text.start(), true, None);
     let interval_menu = Submenu::new(text.interval_menu(current_interval), true);
     let generate_video = MenuItem::new(text.generate_today_video(), true, None);
+    let history_videos = MenuItem::new(text.history_videos(), true, None);
     let open_output_dir = MenuItem::new(text.open_output_dir(), true, None);
     let language_menu = Submenu::new(text.language_menu(), true);
     let quit = MenuItem::new(text.quit(), true, None);
@@ -120,6 +123,7 @@ fn build_menu(current_interval: u64, language: Language) -> AppResult<TrayContro
         &interval_menu,
         &PredefinedMenuItem::separator(),
         &generate_video,
+        &history_videos,
         &open_output_dir,
         &language_menu,
         &PredefinedMenuItem::separator(),
@@ -133,6 +137,7 @@ fn build_menu(current_interval: u64, language: Language) -> AppResult<TrayContro
         interval_menu,
         interval_items,
         generate_video,
+        history_videos,
         open_output_dir,
         language_menu,
         language_items,
@@ -165,6 +170,10 @@ pub(crate) fn command_for_event(event: &MenuEvent, controls: &TrayControls) -> O
         return Some(AppCommand::GenerateTodayVideo);
     }
 
+    if event.id == controls.history_videos.id() {
+        return Some(AppCommand::OpenHistoryVideos);
+    }
+
     if event.id == controls.open_output_dir.id() {
         return Some(AppCommand::OpenOutputDir);
     }
@@ -189,6 +198,7 @@ pub(crate) fn update_menu_labels(
     controls
         .generate_video
         .set_text(text.generate_today_video());
+    controls.history_videos.set_text(text.history_videos());
     controls.open_output_dir.set_text(text.open_output_dir());
     controls.language_menu.set_text(text.language_menu());
     for (value, item) in &controls.language_items {
@@ -310,6 +320,19 @@ mod tests {
         assert_eq!(
             command_for_event(&event, &controls),
             Some(AppCommand::SetLanguage(Language::En))
+        );
+    }
+
+    #[test]
+    fn command_for_event_detects_history_videos() {
+        let controls = build_menu(30, Language::ZhCn).expect("build menu");
+        let event = MenuEvent {
+            id: controls.history_videos.id().clone(),
+        };
+
+        assert_eq!(
+            command_for_event(&event, &controls),
+            Some(AppCommand::OpenHistoryVideos)
         );
     }
 }

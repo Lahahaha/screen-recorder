@@ -29,13 +29,45 @@ pub(crate) struct TextBundle {
     capture_success_title: &'static str,
     capture_failed_title: &'static str,
     output_dir_failed_title: &'static str,
+    history_videos: &'static str,
+    refresh: &'static str,
+    add_folder: &'static str,
+    generate_selected: &'static str,
+    cancel: &'static str,
+    cancelling: &'static str,
+    open_videos_folder: &'static str,
+    date_or_folder: &'static str,
+    images: &'static str,
+    video: &'static str,
+    status: &'static str,
+    ready: &'static str,
+    unavailable: &'static str,
+    failed: &'static str,
+    no_available_images: &'static str,
+    exists: &'static str,
+    missing: &'static str,
+    generating: &'static str,
+    done: &'static str,
+    scanning: &'static str,
+    processing_frames_prefix: &'static str,
+    encoding: &'static str,
+    finishing: &'static str,
+    selected_count_prefix: &'static str,
+    selected_count_suffix: &'static str,
+    frames_label: &'static str,
+    skipped_label: &'static str,
+    output: &'static str,
+    selected_folders: &'static str,
+    no_selection: &'static str,
     video_generating_title: &'static str,
     video_generating_body: &'static str,
     video_success_title: &'static str,
     video_failed_title: &'static str,
     config_read_failed_prefix: &'static str,
     background_task_failed_title: &'static str,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     screen_capture_permission_title: &'static str,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     screen_capture_permission_body: &'static str,
 }
 
@@ -61,6 +93,36 @@ const ZH_CN_TEXT: TextBundle = TextBundle {
     capture_success_title: "截图成功",
     capture_failed_title: "截图失败",
     output_dir_failed_title: "打开保存目录失败",
+    history_videos: "历史视频",
+    refresh: "刷新",
+    add_folder: "添加文件夹",
+    generate_selected: "生成选中项",
+    cancel: "取消",
+    cancelling: "正在取消...",
+    open_videos_folder: "打开视频目录",
+    date_or_folder: "日期 / 文件夹",
+    images: "图片",
+    video: "视频",
+    status: "状态",
+    ready: "就绪",
+    unavailable: "不可用",
+    failed: "失败",
+    no_available_images: "无可用图片",
+    exists: "已存在",
+    missing: "未生成",
+    generating: "生成中",
+    done: "完成",
+    scanning: "扫描图片",
+    processing_frames_prefix: "处理帧",
+    encoding: "编码视频",
+    finishing: "写入视频",
+    selected_count_prefix: "已选 ",
+    selected_count_suffix: " 项",
+    frames_label: "帧",
+    skipped_label: "跳过",
+    output: "输出",
+    selected_folders: "选中文件夹",
+    no_selection: "未选择",
     video_generating_title: "视频生成中",
     video_generating_body: "已有视频生成任务正在运行。",
     video_success_title: "视频生成成功",
@@ -93,6 +155,36 @@ const EN_TEXT: TextBundle = TextBundle {
     capture_success_title: "Screenshot Saved",
     capture_failed_title: "Screenshot Failed",
     output_dir_failed_title: "Failed to Open Save Folder",
+    history_videos: "History Videos",
+    refresh: "Refresh",
+    add_folder: "Add Folder",
+    generate_selected: "Generate Selected",
+    cancel: "Cancel",
+    cancelling: "Cancelling...",
+    open_videos_folder: "Open Videos Folder",
+    date_or_folder: "Date / Folder",
+    images: "Images",
+    video: "Video",
+    status: "Status",
+    ready: "Ready",
+    unavailable: "Unavailable",
+    failed: "Failed",
+    no_available_images: "No available images",
+    exists: "Exists",
+    missing: "Missing",
+    generating: "Generating",
+    done: "Done",
+    scanning: "Scanning images",
+    processing_frames_prefix: "Processing frames",
+    encoding: "Encoding video",
+    finishing: "Writing video",
+    selected_count_prefix: "",
+    selected_count_suffix: " selected",
+    frames_label: "frames",
+    skipped_label: "skipped",
+    output: "Output",
+    selected_folders: "Selected Folders",
+    no_selection: "No selection",
     video_generating_title: "Video Generation Running",
     video_generating_body: "A video generation task is already running.",
     video_success_title: "Video Generated",
@@ -189,6 +281,124 @@ impl Text {
         self.bundle.output_dir_failed_title
     }
 
+    pub(crate) fn history_videos(&self) -> &'static str {
+        self.bundle.history_videos
+    }
+
+    pub(crate) fn refresh(&self) -> &'static str {
+        self.bundle.refresh
+    }
+
+    pub(crate) fn add_folder(&self) -> &'static str {
+        self.bundle.add_folder
+    }
+
+    pub(crate) fn generate_selected(&self) -> &'static str {
+        self.bundle.generate_selected
+    }
+
+    pub(crate) fn cancel(&self) -> &'static str {
+        self.bundle.cancel
+    }
+
+    pub(crate) fn cancelling(&self) -> &'static str {
+        self.bundle.cancelling
+    }
+
+    pub(crate) fn open_videos_folder(&self) -> &'static str {
+        self.bundle.open_videos_folder
+    }
+
+    pub(crate) fn date_or_folder(&self) -> &'static str {
+        self.bundle.date_or_folder
+    }
+
+    pub(crate) fn images(&self) -> &'static str {
+        self.bundle.images
+    }
+
+    pub(crate) fn video(&self) -> &'static str {
+        self.bundle.video
+    }
+
+    pub(crate) fn status(&self) -> &'static str {
+        self.bundle.status
+    }
+
+    pub(crate) fn ready(&self) -> &'static str {
+        self.bundle.ready
+    }
+
+    pub(crate) fn unavailable(&self) -> &'static str {
+        self.bundle.unavailable
+    }
+
+    pub(crate) fn failed(&self) -> &'static str {
+        self.bundle.failed
+    }
+
+    pub(crate) fn no_available_images(&self) -> &'static str {
+        self.bundle.no_available_images
+    }
+
+    pub(crate) fn exists(&self) -> &'static str {
+        self.bundle.exists
+    }
+
+    pub(crate) fn missing(&self) -> &'static str {
+        self.bundle.missing
+    }
+
+    pub(crate) fn generating(&self) -> &'static str {
+        self.bundle.generating
+    }
+
+    pub(crate) fn done_label(&self) -> &'static str {
+        self.bundle.done
+    }
+
+    pub(crate) fn scanning(&self) -> &'static str {
+        self.bundle.scanning
+    }
+
+    pub(crate) fn preparing_frames(&self, current: usize, total: usize) -> String {
+        format!("{} {current}/{total}", self.bundle.processing_frames_prefix)
+    }
+
+    pub(crate) fn encoding(&self) -> &'static str {
+        self.bundle.encoding
+    }
+
+    pub(crate) fn finishing(&self) -> &'static str {
+        self.bundle.finishing
+    }
+
+    pub(crate) fn selected_count(&self, count: usize) -> String {
+        format!(
+            "{}{count}{}",
+            self.bundle.selected_count_prefix, self.bundle.selected_count_suffix
+        )
+    }
+
+    pub(crate) fn generation_done_status(&self, frame_count: usize, skipped: usize) -> String {
+        format!(
+            "{}: {frame_count} {}, {} {skipped}",
+            self.bundle.done, self.bundle.frames_label, self.bundle.skipped_label
+        )
+    }
+
+    pub(crate) fn output(&self) -> &'static str {
+        self.bundle.output
+    }
+
+    pub(crate) fn selected_folders(&self) -> &'static str {
+        self.bundle.selected_folders
+    }
+
+    pub(crate) fn no_selection(&self) -> &'static str {
+        self.bundle.no_selection
+    }
+
     pub(crate) fn video_generating_title(&self) -> &'static str {
         self.bundle.video_generating_title
     }
@@ -213,10 +423,12 @@ impl Text {
         self.bundle.background_task_failed_title
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn screen_capture_permission_title(&self) -> &'static str {
         self.bundle.screen_capture_permission_title
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn screen_capture_permission_body(&self) -> &'static str {
         self.bundle.screen_capture_permission_body
     }
