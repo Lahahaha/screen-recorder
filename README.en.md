@@ -2,145 +2,207 @@
 
 English | [中文](./README.md)
 
-A lightweight screen recording tool that automatically captures screenshots and generates time-lapse videos. Built with Rust for minimal resource usage.
+A lightweight screen activity recorder that saves timed screenshots and turns them into time-lapse videos. It is built with Rust, runs primarily from the system tray, and is intended for personal daily recording of work sessions, study sessions, or long-running task progress.
 
 ## Features
 
-- 🖥️ **System Tray** - Runs quietly in the menu bar/system tray
-- ⏱️ **Auto Capture** - Timed screenshots (10s/30s/60s/120s intervals)
-- 🎬 **Video Generation** - Creates H.264 time-lapse videos
-- 🔔 **Notifications** - macOS system notifications for video status
-- 📁 **Auto Organization** - Screenshots organized by date
-- 🖥️ **Cross Platform** - macOS and Windows support
+- 🖥️ **System tray app**: Runs quietly in the macOS menu bar or Windows system tray.
+- ⏱️ **Timed screenshots**: Supports 10s, 30s, 60s, and 120s intervals.
+- 📷 **Manual capture**: Take an immediate screenshot from the tray menu.
+- 🎬 **Today's video**: Generate a time-lapse video from today's screenshots.
+- 🗂️ **History video window**: List historical screenshot folders or import external folders to generate videos.
+- 🧩 **Multi-screen video foundation**: The video generator can group supported multi-screen batches into one composed frame. The built-in capture flow currently captures one screen.
+- 🌐 **Chinese/English UI**: Tray menu, tooltip, notifications, and the history window support manual language switching.
+- 🔔 **User feedback**: Capture, video generation, and failure cases are surfaced through notifications or status text.
+- 📁 **Auto organization**: Screenshots are grouped by date, and videos are saved under `videos`.
+- 🖥️ **Cross-platform target**: macOS and Windows are supported targets. Windows passes cross-compilation checks, but real-device validation is still recommended.
 
 ## Download
 
 Download the latest version from [Releases](https://github.com/Lahahaha/screen-recorder/releases):
 
-| Platform | File | Size |
-|----------|------|------|
-| macOS (Apple Silicon) | `ScreenRecorder-macos-arm64.zip` | ~50MB |
-| Windows (x64) | `ScreenRecorder-windows-x64.zip` | ~120MB |
+| Platform | File | Notes |
+|----------|------|-------|
+| macOS Apple Silicon | `ScreenRecorder-macos-arm64.zip` | Includes the app bundle and ffmpeg |
+| Windows x64 | `ScreenRecorder-windows-x64.zip` | Includes the executable and ffmpeg.exe |
 
 ## Usage
 
 ### macOS
 
-1. Download and unzip `ScreenRecorder-macos-arm64.zip`
-2. Double-click `ScreenRecorder.app` to run
-3. Grant screen recording permission when prompted (System Settings → Privacy & Security → Screen Recording)
-4. Find the app icon in the menu bar
+1. Download and unzip `ScreenRecorder-macos-arm64.zip`.
+2. Double-click `ScreenRecorder.app`.
+3. Grant screen recording permission on first capture: System Settings -> Privacy & Security -> Screen Recording.
+4. Find the app icon in the menu bar.
 
 ### Windows
 
-1. Download and unzip `ScreenRecorder-windows-x64.zip`
-2. Double-click `screen-recorder.exe` to run
-3. Find the app icon in the system tray
+1. Download and unzip `ScreenRecorder-windows-x64.zip`.
+2. Double-click `screen-recorder.exe`.
+3. Find the app icon in the system tray.
+4. If video generation fails, make sure `ffmpeg.exe` is next to the app or available in `PATH`.
 
-### Menu Options
+### Tray Menu
 
-| Option | Description |
-|--------|-------------|
-| 📷 Capture Now | Take an immediate screenshot |
-| ▶ Start | Start automatic timed capture |
-| ⏸ Pause | Pause automatic capture |
-| ⏱ Interval | Set capture interval (10s/30s/60s/120s) |
-| 🎬 Generate Video | Create today's time-lapse video |
-| ❌ Exit | Quit the application |
+| Menu item | Description |
+|-----------|-------------|
+| 📷 Capture Now | Save one screenshot immediately |
+| ▶ Start / ⏸ Pause | Start or pause timed capture |
+| ⏱ Interval | Change the capture interval |
+| 🎬 Generate Today's Video | Generate a video from today's screenshots |
+| History Videos | Open the history video window |
+| 📁 Open Save Folder | Open the folder containing screenshots, videos, and config |
+| 🌐 Language | Switch between Chinese and English |
+| ❌ Quit | Save config and quit the app |
 
-### Storage Location
+### History Video Window
 
-Screenshots and videos are saved to:
+The history video window is used to regenerate videos from historical screenshots or external folders.
 
-| Platform | Path |
-|----------|------|
+- Automatically lists date folders under `screenshots`.
+- Supports adding external folders.
+- Supports selecting multiple folders and generating videos one by one.
+- Shows progress during generation and lets you cancel the current batch.
+- Empty folders and folders without images are shown as unavailable.
+- A failed item does not stop the remaining selected items.
+
+You can also open it from the command line:
+
+```bash
+screen-recorder --history
+```
+
+## Storage Location
+
+The app prefers the system video directory by default:
+
+| Platform | Default path |
+|----------|--------------|
 | macOS | `~/Movies/ScreenRecorder/` |
 | Windows | `C:\Users\<username>\Videos\ScreenRecorder\` |
 
-```
+If the system video directory is unavailable, the app falls back to the documents directory and then the home directory.
+
+```text
 ScreenRecorder/
-├── config.json           # Configuration
+├── app.log
+├── app.log.1
+├── config.json
 ├── screenshots/
-│   └── 2026-05-29/
-│       ├── 09-00-00.png
-│       └── 09-00-30.png
+│   └── 2026-05-30/
+│       ├── 09-00-00.123-000000.png
+│       └── 09-00-30.456-000001.png
 └── videos/
-    └── 2026-05-29.mp4
+    └── 2026-05-30.mp4
 ```
 
-### Configuration
+## Configuration
 
-Edit `config.json` to customize settings:
+Settings are stored in `config.json`. Missing fields use defaults.
 
 ```json
 {
   "interval": 30,
   "fps": 10,
-  "image_format": "png"
+  "image_format": "png",
+  "scale": 1.0,
+  "dedup": false,
+  "auto_start": false,
+  "video_codec": "h264",
+  "language": "zh-CN"
 }
 ```
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `interval` | 30 | Capture interval in seconds |
-| `fps` | 10 | Video frame rate |
-| `image_format` | "png" | Screenshot format (png/jpg) |
+| Field | Default | Description |
+|-------|---------|-------------|
+| `interval` | `30` | Capture interval. Supported values: `10`, `30`, `60`, `120` seconds |
+| `fps` | `10` | Generated video frame rate |
+| `image_format` | `"png"` | Screenshot format: `"png"` or `"jpg"` |
+| `scale` | `1.0` | Screenshot scale factor |
+| `dedup` | `false` | Skip consecutive duplicate screenshots |
+| `auto_start` | `false` | Start timed capture when the app launches |
+| `video_codec` | `"h264"` | Video codec: `"h264"` or `"h265"` |
+| `language` | `"zh-CN"` | UI language: `"zh-CN"` or `"en"` |
+
+## Video Generation Rules
+
+- The built-in capture flow currently saves single-screen files named `HH-MM-SS.mmm-000123.png` or `.jpg`.
+- Non-image files are ignored.
+- External images with non-standard names can still be used as normal single-image frames.
+- Broken images are skipped. If no readable image remains, generation fails with a clear error.
+- Single-screen videos keep the source image size, with width/height adjusted to even values when needed for video encoding.
+- Multi-screen batch files are grouped by names like `HH-MM-SS.mmm-screen-01-000123.png`, and `.screens.json` geometry metadata is preferred when present.
+- Multi-screen composition is capped at `7680x4320`.
 
 ## Build from Source
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) (latest stable)
-- [FFmpeg](https://ffmpeg.org/) (for video generation)
+- [Rust](https://rustup.rs/) latest stable
+- [FFmpeg](https://ffmpeg.org/) for video generation
 
 ### macOS
 
 ```bash
-# Clone repository
 git clone https://github.com/Lahahaha/screen-recorder.git
 cd screen-recorder
 
-# Build
+# Build the release binary
 cargo build --release
 
-# Create app bundle
-mkdir -p ScreenRecorder.app/Contents/MacOS
-mkdir -p ScreenRecorder.app/Contents/Resources
-cp target/release/screen-recorder ScreenRecorder.app/Contents/MacOS/
-cp Info.plist ScreenRecorder.app/Contents/
+# Or create an app bundle and download/sign ffmpeg
+./build.sh
 
-# Download ffmpeg
-curl -L "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.0/ffmpeg-darwin-arm64" -o ScreenRecorder.app/Contents/Resources/ffmpeg
-chmod +x ScreenRecorder.app/Contents/Resources/ffmpeg
-
-# Run
+# Run the app bundle
 open ScreenRecorder.app
+
+# Open the history video window directly
+target/release/screen-recorder --history
 ```
 
 ### Windows
 
 ```powershell
-# Clone repository
 git clone https://github.com/Lahahaha/screen-recorder.git
 cd screen-recorder
 
-# Build
 cargo build --release
 
-# Download ffmpeg
-Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
-Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg-extract
 mkdir ScreenRecorder
-cp target/release/screen-recorder.exe ScreenRecorder/
-cp ffmpeg-extract/*/bin/ffmpeg.exe ScreenRecorder/
+copy target\release\screen-recorder.exe ScreenRecorder\
 
-# Run
+# Put ffmpeg.exe in the ScreenRecorder folder, or add ffmpeg to PATH
 .\ScreenRecorder\screen-recorder.exe
+```
+
+## Development Checks
+
+```bash
+cargo fmt --check
+cargo test
+cargo clippy -- -D warnings
+cargo build --release
+
+# Optional: Windows conditional compilation check
+rustup target add x86_64-pc-windows-gnu
+cargo clippy --target x86_64-pc-windows-gnu -- -D warnings
+```
+
+Profile video generation:
+
+```bash
+target/release/screen-recorder --profile-video-dir <screenshot-dir> <output-video.mp4>
+```
+
+Simulate multi-screen screenshots:
+
+```bash
+cargo run -- --simulate-multiscreen-video
 ```
 
 ## Auto Release
 
-Pushing a tag automatically builds and releases:
+Pushing a tag triggers GitHub Actions to build and publish a release:
 
 ```bash
 git tag v0.1.0
@@ -153,4 +215,4 @@ git push origin v0.1.0
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Issues and pull requests are welcome.
