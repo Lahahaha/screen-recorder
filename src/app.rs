@@ -1,7 +1,7 @@
 use crate::{
     capture::{
-        available_screen_infos, capture_once, validate_capture_mode_for_screens, CaptureReport,
-        CaptureScreenInfo,
+        available_screen_infos, validate_capture_mode_for_screens, CaptureReport,
+        CaptureScreenInfo, CaptureSession,
     },
     config::{
         cloned_config, load_config, save_config, save_current_config, CaptureMode, Config, Language,
@@ -33,7 +33,7 @@ use tray_icon::menu::MenuEvent;
 use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
 use winit::{
     event::{Event, StartCause},
-    event_loop::{ControlFlow, EventLoopBuilder},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
 };
 
 pub(crate) type AppResult<T> = Result<T, Box<dyn Error>>;
@@ -87,6 +87,7 @@ impl ThreadRegistry {
 
 struct AppState {
     paths: AppPaths,
+    capture_session: Arc<CaptureSession>,
     config: Arc<Mutex<Config>>,
     running: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
@@ -111,11 +112,13 @@ pub(crate) fn run() -> AppResult<()> {
     let running = Arc::new(AtomicBool::new(auto_start));
     let shutdown = Arc::new(AtomicBool::new(false));
     let generating_video = Arc::new(AtomicBool::new(false));
+    let capture_session = Arc::new(CaptureSession::new());
     let workers = ThreadRegistry::default();
     let (app_event_tx, app_event_rx) = mpsc::channel::<AppEvent>();
 
     let mut capture_thread = Some(spawn_capture_loop(
         paths.clone(),
+        Arc::clone(&capture_session),
         Arc::clone(&running),
         Arc::clone(&shutdown),
         Arc::clone(&config),
@@ -124,6 +127,7 @@ pub(crate) fn run() -> AppResult<()> {
     ));
     let app_state = AppState {
         paths,
+        capture_session,
         config,
         running,
         shutdown,
@@ -133,7 +137,7 @@ pub(crate) fn run() -> AppResult<()> {
         logger,
     };
 
-    let mut event_loop_builder = EventLoopBuilder::<()>::with_user_event();
+    let mut event_loop_builder = EventLoop::<()>::with_user_event();
     #[cfg(target_os = "macos")]
     event_loop_builder.with_activation_policy(ActivationPolicy::Accessory);
 
@@ -161,6 +165,7 @@ pub(crate) fn run() -> AppResult<()> {
                     match tray::create_tray_state(
                         &app_state.config,
                         app_state.running.load(Ordering::SeqCst),
+                        &app_state.logger,
                     ) {
                         Ok(state) => {
                             tray_state = Some(state);
@@ -244,12 +249,13 @@ fn handle_app_command(
     command: AppCommand,
     controls: &mut TrayControls,
     state: &AppState,
-    event_loop: &winit::event_loop::EventLoopWindowTarget<()>,
+    event_loop: &ActiveEventLoop,
     saved_on_quit: &mut bool,
 ) {
     match command {
         AppCommand::CaptureNow => capture_once_in_thread(
             state.paths.clone(),
+            Arc::clone(&state.capture_session),
             Arc::clone(&state.config),
             state.app_events.clone(),
             &state.workers,
@@ -436,6 +442,7 @@ fn set_language(
 
 fn capture_once_in_thread(
     paths: AppPaths,
+    capture_session: Arc<CaptureSession>,
     config: Arc<Mutex<Config>>,
     app_events: mpsc::Sender<AppEvent>,
     workers: &ThreadRegistry,
@@ -447,7 +454,7 @@ fn capture_once_in_thread(
         language,
         logger.clone(),
         move || match cloned_config(&config) {
-            Ok(config) => match capture_once(&paths, &config, &logger) {
+            Ok(config) => match capture_session.capture_once(&paths, &config, &logger) {
                 Ok(report) => {
                     let _ = app_events.send(AppEvent::CaptureSucceeded {
                         report,
@@ -540,6 +547,7 @@ fn generate_today_video_in_thread(
 
 fn spawn_capture_loop(
     paths: AppPaths,
+    capture_session: Arc<CaptureSession>,
     running: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     config: Arc<Mutex<Config>>,
@@ -550,7 +558,15 @@ fn spawn_capture_loop(
         let panic_logger = logger.clone();
         let panic_config = Arc::clone(&config);
         if let Err(panic_payload) = panic::catch_unwind(AssertUnwindSafe(move || {
-            run_capture_loop(paths, running, shutdown, config, app_events, logger);
+            run_capture_loop(
+                paths,
+                capture_session,
+                running,
+                shutdown,
+                config,
+                app_events,
+                logger,
+            );
         })) {
             report_thread_panic(
                 "定时截屏线程",
@@ -564,6 +580,7 @@ fn spawn_capture_loop(
 
 fn run_capture_loop(
     paths: AppPaths,
+    capture_session: Arc<CaptureSession>,
     running: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     config: Arc<Mutex<Config>>,
@@ -590,7 +607,7 @@ fn run_capture_loop(
                     }
 
                     if now >= next_capture {
-                        match capture_once(&paths, &config, &logger) {
+                        match capture_session.capture_once(&paths, &config, &logger) {
                             Ok(report) => {
                                 let _ = app_events.send(AppEvent::CaptureSucceeded {
                                     report,

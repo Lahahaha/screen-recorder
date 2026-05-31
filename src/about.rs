@@ -7,7 +7,7 @@ use crate::{
     platform,
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
-use std::{fs, io, path::PathBuf};
+use std::{fs, io, path::PathBuf, sync::Arc};
 
 const APP_HOMEPAGE: &str = "https://github.com/Lahahaha/screen-recorder";
 const APP_AUTHOR: &str = "Lahahaha";
@@ -57,9 +57,10 @@ fn install_about_fonts(ctx: &egui::Context, logger: &Logger) {
     };
 
     let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("system_cjk".to_string(), FontData::from_owned(font_data));
+    fonts.font_data.insert(
+        "system_cjk".to_string(),
+        Arc::new(FontData::from_owned(font_data)),
+    );
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         fonts
             .families
@@ -116,10 +117,10 @@ impl AboutApp {
 }
 
 impl eframe::App for AboutApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let text = self.text();
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(8.0);
                 ui.heading(APP_NAME);

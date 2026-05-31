@@ -5,8 +5,8 @@ use crate::{
     paths::AppPaths,
     platform,
     screenshot_naming::{
-        multi_screen_metadata_file_name, screenshot_file_name, MultiScreenCaptureMetadata,
-        ScreenCaptureMetadata,
+        multi_screen_metadata_file_name, parse_screenshot_file_name, screenshot_file_name,
+        MultiScreenCaptureMetadata, ScreenCaptureMetadata,
     },
     temp::TempFileCleanup,
 };
@@ -14,19 +14,13 @@ use chrono::{Local, SecondsFormat};
 use image::{imageops::FilterType, DynamicImage, ImageFormat, RgbaImage};
 use screenshots::Screen;
 use std::{
-    collections::{hash_map::DefaultHasher, BTreeMap},
+    collections::BTreeMap,
     fs,
-    hash::{Hash, Hasher},
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
-    },
+    sync::Mutex,
 };
-
-static SCREENSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static LAST_CAPTURE: Mutex<Option<CaptureBatchFingerprint>> = Mutex::new(None);
+use xxhash_rust::xxh3::Xxh3;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CaptureScreenInfo {
@@ -71,6 +65,17 @@ impl CaptureReport {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct CaptureSession {
+    state: Mutex<CaptureState>,
+}
+
+#[derive(Default)]
+struct CaptureState {
+    next_sequence_by_dir: BTreeMap<PathBuf, u64>,
+    last_capture: Option<CaptureBatchFingerprint>,
+}
+
 #[derive(Clone)]
 struct IndexedScreen {
     info: CaptureScreenInfo,
@@ -81,7 +86,6 @@ struct IndexedScreen {
 struct CapturedScreen {
     info: CaptureScreenInfo,
     image: DynamicImage,
-    hash: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,102 +139,137 @@ pub(crate) fn available_screen_infos() -> AppResult<Vec<CaptureScreenInfo>> {
     Ok(infos)
 }
 
-pub(crate) fn capture_once(
-    paths: &AppPaths,
-    config: &Config,
-    logger: &Logger,
-) -> AppResult<CaptureReport> {
-    let timestamp = Local::now();
-    let today = timestamp.format("%Y-%m-%d").to_string();
-    let now = timestamp.format("%H-%M-%S%.3f").to_string();
-    let captured_at = timestamp.to_rfc3339_opts(SecondsFormat::Millis, false);
-    let output_dir = paths.screenshots_dir_for_date(&today);
-    fs::create_dir_all(&output_dir)?;
+impl CaptureSession {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
 
-    let screens = indexed_screens().inspect_err(|_| {
-        platform::notify_screen_capture_failure(logger, config.language);
-    })?;
-    let targets = select_capture_targets(&screens, config.capture_mode)?;
-    let target_screen_count = targets.len();
-    let use_multi_names =
-        matches!(config.capture_mode, CaptureMode::Auto) && target_screen_count > 1;
+    fn lock_state(&self) -> AppResult<std::sync::MutexGuard<'_, CaptureState>> {
+        self.state
+            .lock()
+            .map_err(|error| io::Error::other(error.to_string()).into())
+    }
 
-    let mut captured = Vec::new();
-    let mut failed_screen_count = 0_usize;
-    for target in &targets {
-        match capture_target_screen(target, config.scale) {
-            Ok(capture) => captured.push(capture),
-            Err(error) if use_multi_names => {
-                failed_screen_count += 1;
-                logger.warn(format!(
-                    "跳过截屏失败的屏幕 screen-{:02}: {error}",
-                    target.info.index
-                ));
-            }
-            Err(error) => {
-                platform::notify_screen_capture_failure(logger, config.language);
-                return Err(io::Error::other(format!(
-                    "屏幕 screen-{:02} 截屏失败: {error}",
-                    target.info.index
-                ))
-                .into());
+    pub(crate) fn capture_once(
+        &self,
+        paths: &AppPaths,
+        config: &Config,
+        logger: &Logger,
+    ) -> AppResult<CaptureReport> {
+        let timestamp = Local::now();
+        let today = timestamp.format("%Y-%m-%d").to_string();
+        let now = timestamp.format("%H-%M-%S%.3f").to_string();
+        let captured_at = timestamp.to_rfc3339_opts(SecondsFormat::Millis, false);
+        let output_dir = paths.screenshots_dir_for_date(&today);
+        fs::create_dir_all(&output_dir)?;
+
+        let screens = indexed_screens().inspect_err(|_| {
+            platform::notify_screen_capture_failure(logger, config.language);
+        })?;
+        let targets = select_capture_targets(&screens, config.capture_mode)?;
+        let target_screen_count = targets.len();
+        let use_multi_names =
+            matches!(config.capture_mode, CaptureMode::Auto) && target_screen_count > 1;
+
+        let mut captured = Vec::new();
+        let mut failed_screen_count = 0_usize;
+        for target in &targets {
+            match capture_target_screen(target, config.scale) {
+                Ok(capture) => captured.push(capture),
+                Err(error) if use_multi_names => {
+                    failed_screen_count += 1;
+                    logger.warn(format!(
+                        "跳过截屏失败的屏幕 screen-{:02}: {error}",
+                        target.info.index
+                    ));
+                }
+                Err(error) => {
+                    platform::notify_screen_capture_failure(logger, config.language);
+                    return Err(io::Error::other(format!(
+                        "屏幕 screen-{:02} 截屏失败: {error}",
+                        target.info.index
+                    ))
+                    .into());
+                }
             }
         }
-    }
 
-    if captured.is_empty() {
-        platform::notify_screen_capture_failure(logger, config.language);
-        return Err(io::Error::other("所有目标屏幕截屏失败").into());
-    }
+        if captured.is_empty() {
+            platform::notify_screen_capture_failure(logger, config.language);
+            return Err(io::Error::other("所有目标屏幕截屏失败").into());
+        }
 
-    let geometries = if use_multi_names {
-        let inputs = geometry_inputs_for_targets(&targets, &captured, config.scale);
-        scaled_geometries(&inputs)
-    } else {
-        single_screen_geometries(&captured)
-    };
-    let screen_fingerprints = screen_fingerprints(&captured, &geometries);
+        let geometries = if use_multi_names {
+            let inputs = geometry_inputs_for_targets(&targets, &captured, config.scale);
+            scaled_geometries(&inputs)
+        } else {
+            single_screen_geometries(&captured)
+        };
 
-    if config.dedup {
-        if let Some(report) = duplicate_capture_report(
-            &output_dir,
-            &screen_fingerprints,
+        let (sequence, screen_fingerprints) = {
+            let mut state = self.lock_state()?;
+            let screen_fingerprints = if config.dedup {
+                let screen_fingerprints = screen_fingerprints(&captured, &geometries);
+                if let Some(report) = duplicate_capture_report(
+                    &mut state,
+                    &output_dir,
+                    &screen_fingerprints,
+                    target_screen_count,
+                    failed_screen_count,
+                ) {
+                    logger.info("跳过重复截图批次");
+                    return Ok(report);
+                }
+                Some(screen_fingerprints)
+            } else {
+                clear_capture_fingerprint(&mut state);
+                None
+            };
+            let sequence = reserve_capture_sequence(
+                &mut state,
+                &output_dir,
+                &now,
+                use_multi_names,
+                config.image_format,
+                &captured,
+            )?;
+            (sequence, screen_fingerprints)
+        };
+
+        let report = save_capture_batch(SaveCaptureBatch {
+            output_dir: &output_dir,
+            timestamp: &now,
+            captured_at: &captured_at,
+            sequence,
+            format: config.image_format,
+            use_multi_names,
+            captured: &captured,
+            geometries: &geometries,
             target_screen_count,
             failed_screen_count,
-        )? {
-            logger.info("跳过重复截图批次");
-            return Ok(report);
+            logger,
+        })?;
+
+        if let Some(screen_fingerprints) = screen_fingerprints {
+            let mut state = self.lock_state()?;
+            store_capture_fingerprint(
+                &mut state,
+                CaptureBatchFingerprint {
+                    output_dir,
+                    screens: screen_fingerprints,
+                    paths: report.saved_paths.clone(),
+                    metadata_path: report.metadata_path.clone(),
+                },
+            );
         }
+
+        logger.info(format!(
+            "已保存截图批次: {} 张，失败屏幕: {}",
+            report.saved_count(),
+            report.failed_screen_count
+        ));
+        Ok(report)
     }
-
-    let sequence = SCREENSHOT_SEQUENCE.fetch_add(1, Ordering::SeqCst);
-    let report = save_capture_batch(SaveCaptureBatch {
-        output_dir: &output_dir,
-        timestamp: &now,
-        captured_at: &captured_at,
-        sequence,
-        format: config.image_format,
-        use_multi_names,
-        captured: &captured,
-        geometries: &geometries,
-        target_screen_count,
-        failed_screen_count,
-        logger,
-    })?;
-
-    store_capture_fingerprint(CaptureBatchFingerprint {
-        output_dir,
-        screens: screen_fingerprints,
-        paths: report.saved_paths.clone(),
-        metadata_path: report.metadata_path.clone(),
-    })?;
-
-    logger.info(format!(
-        "已保存截图批次: {} 张，失败屏幕: {}",
-        report.saved_count(),
-        report.failed_screen_count
-    ));
-    Ok(report)
 }
 
 fn indexed_screens() -> AppResult<Vec<IndexedScreen>> {
@@ -327,11 +366,9 @@ fn capture_target_screen(target: &IndexedScreen, scale: f32) -> AppResult<Captur
     let image = RgbaImage::from_raw(width, height, rgba)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "截屏像素数据尺寸不匹配"))?;
     let image = prepare_screenshot_image(image, scale);
-    let hash = rgba_buffer_hash(&image);
     Ok(CapturedScreen {
         info: target.info,
         image,
-        hash,
     })
 }
 
@@ -495,6 +532,88 @@ fn save_capture_batch(input: SaveCaptureBatch<'_>) -> AppResult<CaptureReport> {
     })
 }
 
+fn reserve_capture_sequence(
+    state: &mut CaptureState,
+    output_dir: &Path,
+    timestamp: &str,
+    use_multi_names: bool,
+    format: ScreenshotFormat,
+    captured: &[CapturedScreen],
+) -> AppResult<u64> {
+    let mut sequence = match state.next_sequence_by_dir.get(output_dir) {
+        Some(sequence) => *sequence,
+        None => next_sequence_after_existing_files(output_dir)?,
+    };
+
+    loop {
+        if !capture_batch_paths_exist(
+            output_dir,
+            timestamp,
+            sequence,
+            use_multi_names,
+            format,
+            captured,
+        ) {
+            state.next_sequence_by_dir.insert(
+                output_dir.to_path_buf(),
+                sequence
+                    .checked_add(1)
+                    .ok_or_else(|| io::Error::other("截图序号已达到最大值"))?,
+            );
+            return Ok(sequence);
+        }
+        sequence = sequence
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("截图序号已达到最大值"))?;
+    }
+}
+
+fn next_sequence_after_existing_files(output_dir: &Path) -> AppResult<u64> {
+    let mut next_sequence = 0_u64;
+    if !output_dir.exists() {
+        return Ok(next_sequence);
+    }
+
+    for entry in fs::read_dir(output_dir)? {
+        let path = entry?.path();
+        let Some(name) = parse_screenshot_file_name(&path) else {
+            continue;
+        };
+        let candidate = name
+            .sequence()
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("截图序号已达到最大值"))?;
+        next_sequence = next_sequence.max(candidate);
+    }
+
+    Ok(next_sequence)
+}
+
+fn capture_batch_paths_exist(
+    output_dir: &Path,
+    timestamp: &str,
+    sequence: u64,
+    use_multi_names: bool,
+    format: ScreenshotFormat,
+    captured: &[CapturedScreen],
+) -> bool {
+    let image_exists = captured.iter().any(|capture| {
+        let file_name = screenshot_file_name(
+            timestamp,
+            use_multi_names.then_some(capture.info.index),
+            sequence,
+            format,
+        );
+        output_dir.join(file_name).exists()
+    });
+
+    image_exists
+        || (use_multi_names
+            && output_dir
+                .join(multi_screen_metadata_file_name(timestamp, sequence))
+                .exists())
+}
+
 fn cleanup_saved_files(paths: &[PathBuf], metadata_path: Option<&Path>, logger: &Logger) {
     for path in paths {
         if let Err(error) = fs::remove_file(path) {
@@ -522,32 +641,30 @@ fn prepare_screenshot_image(image: RgbaImage, scale: f32) -> DynamicImage {
 }
 
 fn duplicate_capture_report(
+    state: &mut CaptureState,
     output_dir: &Path,
     screens: &[ScreenFingerprint],
     target_screen_count: usize,
     failed_screen_count: usize,
-) -> AppResult<Option<CaptureReport>> {
-    let mut last_capture = LAST_CAPTURE
-        .lock()
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    let Some(previous) = last_capture.as_ref() else {
-        return Ok(None);
+) -> Option<CaptureReport> {
+    let Some(previous) = state.last_capture.as_ref() else {
+        return None;
     };
     if previous.output_dir == output_dir && previous.screens == screens {
         if !previous_capture_files_exist(previous) {
-            *last_capture = None;
-            return Ok(None);
+            state.last_capture = None;
+            return None;
         }
-        return Ok(Some(CaptureReport {
+        return Some(CaptureReport {
             saved_paths: Vec::new(),
             previous_paths: previous.paths.clone(),
             metadata_path: previous.metadata_path.clone(),
             target_screen_count,
             failed_screen_count,
             skipped_duplicate: true,
-        }));
+        });
     }
-    Ok(None)
+    None
 }
 
 fn previous_capture_files_exist(previous: &CaptureBatchFingerprint) -> bool {
@@ -559,12 +676,12 @@ fn previous_capture_files_exist(previous: &CaptureBatchFingerprint) -> bool {
         }
 }
 
-fn store_capture_fingerprint(fingerprint: CaptureBatchFingerprint) -> AppResult<()> {
-    let mut last_capture = LAST_CAPTURE
-        .lock()
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    *last_capture = Some(fingerprint);
-    Ok(())
+fn store_capture_fingerprint(state: &mut CaptureState, fingerprint: CaptureBatchFingerprint) {
+    state.last_capture = Some(fingerprint);
+}
+
+fn clear_capture_fingerprint(state: &mut CaptureState) {
+    state.last_capture = None;
 }
 
 fn screen_fingerprints(
@@ -584,7 +701,7 @@ fn screen_fingerprints(
                 y: geometry.y,
                 width: geometry.width,
                 height: geometry.height,
-                hash: capture.hash,
+                hash: rgba_buffer_hash(&capture.image),
             }
         })
         .collect::<Vec<_>>();
@@ -738,12 +855,20 @@ fn axis_saved_size(input: GeometryInput, axis: Axis) -> u32 {
 }
 
 fn rgba_buffer_hash(image: &DynamicImage) -> u64 {
+    if let Some(rgba) = image.as_rgba8() {
+        return rgba_raw_hash(rgba.width(), rgba.height(), rgba.as_raw());
+    }
+
     let rgba = image.to_rgba8();
-    let mut hasher = DefaultHasher::new();
-    rgba.width().hash(&mut hasher);
-    rgba.height().hash(&mut hasher);
-    rgba.as_raw().hash(&mut hasher);
-    hasher.finish()
+    rgba_raw_hash(rgba.width(), rgba.height(), rgba.as_raw())
+}
+
+fn rgba_raw_hash(width: u32, height: u32, rgba: &[u8]) -> u64 {
+    let mut hasher = Xxh3::new();
+    hasher.update(&width.to_le_bytes());
+    hasher.update(&height.to_le_bytes());
+    hasher.update(rgba);
+    hasher.digest()
 }
 
 #[cfg(test)]
@@ -751,9 +876,9 @@ mod tests {
     use super::*;
     use crate::screenshot_naming::screenshot_format_for_path;
     use chrono::Local;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    static DUPLICATE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn test_dir() -> PathBuf {
         let sequence = TEST_DIR_SEQUENCE.fetch_add(1, Ordering::SeqCst);
@@ -794,7 +919,6 @@ mod tests {
         CapturedScreen {
             info: screen_info(index, 0, 0, width, height),
             image: DynamicImage::ImageRgba8(RgbaImage::new(width, height)),
-            hash: u64::from(index),
         }
     }
 
@@ -836,6 +960,36 @@ mod tests {
 
         assert_eq!(scaled.width(), 1);
         assert_eq!(scaled.height(), 1);
+    }
+
+    #[test]
+    fn rgba_buffer_hash_matches_identical_rgba_images() {
+        let image = DynamicImage::ImageRgba8(
+            RgbaImage::from_raw(2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]).expect("image"),
+        );
+        let same = image.clone();
+
+        assert_eq!(rgba_buffer_hash(&image), rgba_buffer_hash(&same));
+    }
+
+    #[test]
+    fn rgba_buffer_hash_changes_when_pixels_change() {
+        let image =
+            DynamicImage::ImageRgba8(RgbaImage::from_raw(1, 1, vec![1, 2, 3, 4]).expect("image"));
+        let changed =
+            DynamicImage::ImageRgba8(RgbaImage::from_raw(1, 1, vec![1, 2, 3, 5]).expect("image"));
+
+        assert_ne!(rgba_buffer_hash(&image), rgba_buffer_hash(&changed));
+    }
+
+    #[test]
+    fn rgba_buffer_hash_includes_dimensions() {
+        let pixels = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let tall =
+            DynamicImage::ImageRgba8(RgbaImage::from_raw(1, 2, pixels.clone()).expect("image"));
+        let wide = DynamicImage::ImageRgba8(RgbaImage::from_raw(2, 1, pixels).expect("image"));
+
+        assert_ne!(rgba_buffer_hash(&tall), rgba_buffer_hash(&wide));
     }
 
     #[test]
@@ -947,6 +1101,98 @@ mod tests {
     }
 
     #[test]
+    fn reserve_sequence_starts_at_zero_for_empty_dir() {
+        let dir = test_dir();
+        let mut state = CaptureState::default();
+        let captured = vec![captured_screen(1, 4, 3)];
+
+        let sequence = reserve_capture_sequence(
+            &mut state,
+            &dir,
+            "01-02-03.004",
+            false,
+            ScreenshotFormat::Png,
+            &captured,
+        )
+        .expect("reserve sequence");
+
+        assert_eq!(sequence, 0);
+    }
+
+    #[test]
+    fn reserve_sequence_continues_after_existing_single_screen_files() {
+        let dir = test_dir();
+        fs::write(dir.join("01-02-03.004-000041.png"), b"image").expect("write image");
+        fs::write(dir.join("not-a-capture.png"), b"image").expect("write noise");
+        let mut state = CaptureState::default();
+        let captured = vec![captured_screen(1, 4, 3)];
+
+        let sequence = reserve_capture_sequence(
+            &mut state,
+            &dir,
+            "02-03-04.005",
+            false,
+            ScreenshotFormat::Png,
+            &captured,
+        )
+        .expect("reserve sequence");
+
+        assert_eq!(sequence, 42);
+    }
+
+    #[test]
+    fn reserve_sequence_continues_after_existing_multi_screen_files() {
+        let dir = test_dir();
+        fs::write(dir.join("01-02-03.004-screen-02-000010.jpg"), b"image").expect("write image");
+        let mut state = CaptureState::default();
+        let captured = vec![captured_screen(2, 4, 3)];
+
+        let sequence = reserve_capture_sequence(
+            &mut state,
+            &dir,
+            "02-03-04.005",
+            true,
+            ScreenshotFormat::Png,
+            &captured,
+        )
+        .expect("reserve sequence");
+
+        assert_eq!(sequence, 11);
+    }
+
+    #[test]
+    fn reserve_sequence_skips_existing_targets_and_metadata() {
+        let dir = test_dir();
+        fs::write(
+            dir.join("01-02-03.004-screen-02-000007.png"),
+            b"existing image",
+        )
+        .expect("write image");
+        fs::write(
+            dir.join("01-02-03.004-000008.screens.json"),
+            b"existing metadata",
+        )
+        .expect("write metadata");
+        let mut state = CaptureState {
+            next_sequence_by_dir: BTreeMap::from([(dir.clone(), 7)]),
+            last_capture: None,
+        };
+        let captured = vec![captured_screen(2, 4, 3)];
+
+        let sequence = reserve_capture_sequence(
+            &mut state,
+            &dir,
+            "01-02-03.004",
+            true,
+            ScreenshotFormat::Png,
+            &captured,
+        )
+        .expect("reserve sequence");
+
+        assert_eq!(sequence, 9);
+    }
+
+    #[test]
     fn screen_indices_put_primary_first_then_position() {
         let mut primary = screen_info(10, 100, 0, 100, 100);
         primary.is_primary = true;
@@ -1017,10 +1263,10 @@ mod tests {
 
     #[test]
     fn duplicate_report_matches_success_screen_set_and_geometry() {
-        let _guard = DUPLICATE_TEST_LOCK.lock().expect("lock duplicate tests");
         let dir = test_dir();
         let previous_path = dir.join("screen.png");
         fs::write(&previous_path, b"image").expect("write previous screenshot");
+        let mut state = CaptureState::default();
         let screens = vec![ScreenFingerprint {
             screen_index: 1,
             x: 0,
@@ -1029,17 +1275,17 @@ mod tests {
             height: 10,
             hash: 42,
         }];
-        store_capture_fingerprint(CaptureBatchFingerprint {
-            output_dir: dir.clone(),
-            screens: screens.clone(),
-            paths: vec![previous_path.clone()],
-            metadata_path: None,
-        })
-        .expect("store fingerprint");
+        store_capture_fingerprint(
+            &mut state,
+            CaptureBatchFingerprint {
+                output_dir: dir.clone(),
+                screens: screens.clone(),
+                paths: vec![previous_path.clone()],
+                metadata_path: None,
+            },
+        );
 
-        let report = duplicate_capture_report(&dir, &screens, 1, 0)
-            .expect("duplicate check")
-            .expect("duplicate");
+        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0).expect("duplicate");
 
         assert!(report.skipped_duplicate);
         assert!(report.saved_paths.is_empty());
@@ -1048,8 +1294,8 @@ mod tests {
 
     #[test]
     fn duplicate_report_ignores_stale_missing_files() {
-        let _guard = DUPLICATE_TEST_LOCK.lock().expect("lock duplicate tests");
         let dir = test_dir();
+        let mut state = CaptureState::default();
         let screens = vec![ScreenFingerprint {
             screen_index: 1,
             x: 0,
@@ -1059,25 +1305,27 @@ mod tests {
             hash: 42,
         }];
         let stale_path = dir.join("deleted-screen.png");
-        store_capture_fingerprint(CaptureBatchFingerprint {
-            output_dir: dir.clone(),
-            screens: screens.clone(),
-            paths: vec![stale_path],
-            metadata_path: None,
-        })
-        .expect("store fingerprint");
+        store_capture_fingerprint(
+            &mut state,
+            CaptureBatchFingerprint {
+                output_dir: dir.clone(),
+                screens: screens.clone(),
+                paths: vec![stale_path],
+                metadata_path: None,
+            },
+        );
 
-        let report = duplicate_capture_report(&dir, &screens, 1, 0).expect("duplicate check");
+        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0);
 
         assert!(report.is_none());
     }
 
     #[test]
     fn duplicate_report_ignores_stale_missing_metadata() {
-        let _guard = DUPLICATE_TEST_LOCK.lock().expect("lock duplicate tests");
         let dir = test_dir();
         let image_path = dir.join("screen.png");
         fs::write(&image_path, b"image").expect("write image");
+        let mut state = CaptureState::default();
         let screens = vec![ScreenFingerprint {
             screen_index: 1,
             x: 0,
@@ -1086,17 +1334,78 @@ mod tests {
             height: 10,
             hash: 42,
         }];
-        store_capture_fingerprint(CaptureBatchFingerprint {
-            output_dir: dir.clone(),
-            screens: screens.clone(),
-            paths: vec![image_path],
-            metadata_path: Some(dir.join("deleted.screens.json")),
-        })
-        .expect("store fingerprint");
+        store_capture_fingerprint(
+            &mut state,
+            CaptureBatchFingerprint {
+                output_dir: dir.clone(),
+                screens: screens.clone(),
+                paths: vec![image_path],
+                metadata_path: Some(dir.join("deleted.screens.json")),
+            },
+        );
 
-        let report = duplicate_capture_report(&dir, &screens, 1, 0).expect("duplicate check");
+        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0);
 
         assert!(report.is_none());
+    }
+
+    #[test]
+    fn duplicate_report_returns_none_after_clear_capture_fingerprint() {
+        let dir = test_dir();
+        let previous_path = dir.join("screen.png");
+        fs::write(&previous_path, b"image").expect("write previous screenshot");
+        let mut state = CaptureState::default();
+        let screens = vec![ScreenFingerprint {
+            screen_index: 1,
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+            hash: 42,
+        }];
+        store_capture_fingerprint(
+            &mut state,
+            CaptureBatchFingerprint {
+                output_dir: dir.clone(),
+                screens: screens.clone(),
+                paths: vec![previous_path],
+                metadata_path: None,
+            },
+        );
+
+        clear_capture_fingerprint(&mut state);
+
+        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0);
+        assert!(report.is_none());
+    }
+
+    #[test]
+    fn duplicate_state_isolated_between_capture_states() {
+        let dir = test_dir();
+        let previous_path = dir.join("screen.png");
+        fs::write(&previous_path, b"image").expect("write previous screenshot");
+        let mut first = CaptureState::default();
+        let mut second = CaptureState::default();
+        let screens = vec![ScreenFingerprint {
+            screen_index: 1,
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+            hash: 42,
+        }];
+        store_capture_fingerprint(
+            &mut first,
+            CaptureBatchFingerprint {
+                output_dir: dir.clone(),
+                screens: screens.clone(),
+                paths: vec![previous_path],
+                metadata_path: None,
+            },
+        );
+
+        assert!(duplicate_capture_report(&mut first, &dir, &screens, 1, 0).is_some());
+        assert!(duplicate_capture_report(&mut second, &dir, &screens, 1, 0).is_none());
     }
 
     #[test]
@@ -1124,7 +1433,10 @@ mod tests {
             screens.len()
         );
 
-        let report = capture_once(&paths, &config, &logger).expect("capture once");
+        let session = CaptureSession::new();
+        let report = session
+            .capture_once(&paths, &config, &logger)
+            .expect("capture once");
 
         assert_eq!(report.target_screen_count, screens.len());
         assert_eq!(report.failed_screen_count, 0);

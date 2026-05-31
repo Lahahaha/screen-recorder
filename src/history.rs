@@ -20,7 +20,7 @@ use std::{
     fs, io,
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{mpsc, Arc},
     thread,
     time::Duration,
 };
@@ -72,9 +72,10 @@ fn install_history_fonts(ctx: &egui::Context, logger: &Logger) {
     };
 
     let mut fonts = FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("system_cjk".to_string(), FontData::from_owned(font_data));
+    fonts.font_data.insert(
+        "system_cjk".to_string(),
+        Arc::new(FontData::from_owned(font_data)),
+    );
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         fonts
             .families
@@ -478,7 +479,8 @@ impl HistoryApp {
 }
 
 impl eframe::App for HistoryApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         self.poll_events();
         if !self.generating {
             self.reconcile_generation_mode_with_selection();
@@ -496,13 +498,13 @@ impl eframe::App for HistoryApp {
             });
         let palette = HistoryPalette::from_theme(ctx.theme());
 
-        egui::TopBottomPanel::top("history_toolbar")
+        egui::Panel::top("history_toolbar")
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.bg)
-                    .inner_margin(egui::Margin::symmetric(24.0, 0.0)),
+                    .inner_margin(egui::Margin::symmetric(24, 0)),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
@@ -553,11 +555,11 @@ impl eframe::App for HistoryApp {
                 });
 
                 ui.add_space(14.0);
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.card)
                     .stroke(egui::Stroke::new(1.0, palette.border))
-                    .rounding(egui::Rounding::same(12.0))
-                    .inner_margin(egui::Margin::symmetric(18.0, 14.0))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::symmetric(18, 14))
                     .show(ui, |ui| {
                         ui.allocate_ui_with_layout(
                             egui::vec2(ui.available_width(), HISTORY_MODE_ROW_HEIGHT),
@@ -635,13 +637,13 @@ impl eframe::App for HistoryApp {
                 ui.add_space(12.0);
             });
 
-        egui::TopBottomPanel::bottom("status")
+        egui::Panel::bottom("status")
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.bg)
-                    .inner_margin(egui::Margin::symmetric(24.0, 6.0)),
+                    .inner_margin(egui::Margin::symmetric(24, 6)),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(ready_label(self.config.language)).color(palette.muted),
@@ -659,26 +661,26 @@ impl eframe::App for HistoryApp {
                 });
             });
 
-        egui::SidePanel::right("details")
+        egui::Panel::right("details")
             .resizable(true)
-            .default_width(340.0)
+            .default_size(340.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.bg)
                     .inner_margin(egui::Margin {
                         left: HISTORY_PANEL_MARGIN_X,
                         right: HISTORY_PANEL_MARGIN_X,
-                        top: 0.0,
+                        top: 0,
                         bottom: HISTORY_PANEL_BOTTOM_GAP,
                     }),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.add_space(HISTORY_PANEL_TOP_GAP);
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.card)
                     .stroke(egui::Stroke::new(1.0, palette.border))
-                    .rounding(egui::Rounding::same(12.0))
-                    .inner_margin(egui::Margin::same(18.0))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(18))
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         ui.set_min_height(ui.available_height());
@@ -690,23 +692,23 @@ impl eframe::App for HistoryApp {
 
         egui::CentralPanel::default()
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.bg)
                     .inner_margin(egui::Margin {
                         left: HISTORY_PANEL_MARGIN_X,
                         right: HISTORY_PANEL_MARGIN_X,
-                        top: 0.0,
+                        top: 0,
                         bottom: HISTORY_PANEL_BOTTOM_GAP,
                     }),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.add_space(HISTORY_PANEL_TOP_GAP);
                 let mut selection_changed = false;
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(palette.card)
                     .stroke(egui::Stroke::new(1.0, palette.border))
-                    .rounding(egui::Rounding::same(12.0))
-                    .inner_margin(egui::Margin::same(16.0))
+                    .corner_radius(egui::CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(16))
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
                         ui.set_min_height(ui.available_height());
@@ -760,7 +762,7 @@ impl eframe::App for HistoryApp {
                 }
             });
 
-        self.show_generation_dialog(ctx);
+        self.show_generation_dialog(&ctx);
     }
 }
 
@@ -834,9 +836,9 @@ impl HistoryPalette {
 }
 
 const HISTORY_MODE_ROW_HEIGHT: f32 = 44.0;
-const HISTORY_PANEL_MARGIN_X: f32 = 24.0;
+const HISTORY_PANEL_MARGIN_X: i8 = 24;
 const HISTORY_PANEL_TOP_GAP: f32 = 16.0;
-const HISTORY_PANEL_BOTTOM_GAP: f32 = 16.0;
+const HISTORY_PANEL_BOTTOM_GAP: i8 = 16;
 const HISTORY_MODE_SUMMARY_WIDTH: f32 = 150.0;
 const HISTORY_MODE_SUMMARY_CONTENT_HEIGHT: f32 = 36.0;
 
@@ -938,11 +940,11 @@ fn show_details_panel(
             .color(palette.text),
     );
     ui.add_space(14.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(palette.inset)
         .stroke(egui::Stroke::new(1.0, palette.border))
-        .rounding(egui::Rounding::same(12.0))
-        .inner_margin(egui::Margin::same(14.0))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -976,11 +978,11 @@ fn show_details_panel(
         ui.label(egui::RichText::new(text.no_selection()).color(palette.muted));
     } else {
         for source in selected.iter().take(4) {
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(palette.inset_alt)
                 .stroke(egui::Stroke::new(1.0, palette.border))
-                .rounding(egui::Rounding::same(8.0))
-                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::symmetric(12, 8))
                 .show(ui, |ui| {
                     ui.add(
                         egui::Label::new(egui::RichText::new(&source.label).color(palette.text))
@@ -1015,11 +1017,11 @@ fn show_details_panel(
             .color(palette.text),
     );
     ui.add_space(8.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(palette.inset)
         .stroke(egui::Stroke::new(1.0, palette.border))
-        .rounding(egui::Rounding::same(12.0))
-        .inner_margin(egui::Margin::same(14.0))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
             detail_row(
                 ui,
@@ -1043,11 +1045,11 @@ fn show_output_location_footer(ui: &mut egui::Ui, app: &mut HistoryApp, palette:
             .color(palette.text),
     );
     ui.add_space(8.0);
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(palette.footer)
         .stroke(egui::Stroke::new(1.0, palette.border))
-        .rounding(egui::Rounding::same(12.0))
-        .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+        .corner_radius(egui::CornerRadius::same(12))
+        .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 let path = app.paths.videos.display().to_string();
@@ -1203,7 +1205,7 @@ fn show_source_header(
         egui::Sense::hover(),
     );
     ui.painter()
-        .rect_filled(row_rect, egui::Rounding::same(0.0), palette.header);
+        .rect_filled(row_rect, egui::CornerRadius::same(0), palette.header);
     let columns = layout.column_rects(row_rect);
     show_header_label(
         ui,
@@ -1274,8 +1276,13 @@ fn show_source_card(
         egui::vec2(context.layout.row_width, SOURCE_ROW_HEIGHT),
         egui::Sense::hover(),
     );
-    ui.painter()
-        .rect(row_rect, egui::Rounding::same(12.0), fill, stroke);
+    ui.painter().rect(
+        row_rect,
+        egui::CornerRadius::same(12),
+        fill,
+        stroke,
+        egui::StrokeKind::Middle,
+    );
     let columns = context.layout.column_rects(row_rect);
 
     let checkbox_rect = egui::Rect::from_center_size(
@@ -1372,7 +1379,7 @@ fn paint_chip(
         egui::vec2((rect.width() - 12.0).max(36.0), 34.0),
     );
     ui.painter()
-        .rect_filled(chip_rect, egui::Rounding::same(12.0), fill);
+        .rect_filled(chip_rect, egui::CornerRadius::same(12), fill);
     ui.put(
         chip_rect.shrink2(egui::vec2(8.0, 0.0)),
         egui::Label::new(egui::RichText::new(label).small().color(color)).truncate(),
@@ -1384,8 +1391,8 @@ fn paint_folder_icon(ui: &egui::Ui, rect: egui::Rect, palette: HistoryPalette) {
     let painter = ui.painter();
     let tab = egui::Rect::from_min_size(rect.min + egui::vec2(3.0, 3.0), egui::vec2(17.0, 9.0));
     let body = egui::Rect::from_min_size(rect.min + egui::vec2(2.0, 9.0), egui::vec2(30.0, 18.0));
-    painter.rect_filled(tab, egui::Rounding::same(4.0), palette.folder_tab);
-    painter.rect_filled(body, egui::Rounding::same(5.0), palette.folder_body);
+    painter.rect_filled(tab, egui::CornerRadius::same(4), palette.folder_tab);
+    painter.rect_filled(body, egui::CornerRadius::same(5), palette.folder_body);
 }
 
 fn history_subtitle(language: Language) -> &'static str {

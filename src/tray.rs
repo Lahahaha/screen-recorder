@@ -3,13 +3,16 @@ use crate::{
     capture::{available_screen_infos, validate_capture_mode_for_screens, CaptureScreenInfo},
     config::{CaptureMode, Config, Language, SUPPORTED_INTERVALS},
     i18n::{Text, APP_NAME},
+    logging::Logger,
 };
 use std::{
     io,
     sync::{Arc, Mutex},
 };
 use tray_icon::{
-    menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
+    menu::{
+        CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+    },
     Icon as TrayIconImage, TrayIcon, TrayIconBuilder,
 };
 
@@ -31,6 +34,7 @@ pub(crate) struct TrayControls {
     language_items: Vec<(Language, CheckMenuItem)>,
     about: MenuItem,
     quit: MenuItem,
+    command_ids: TrayCommandIds,
 }
 
 pub(crate) struct TrayState {
@@ -53,15 +57,40 @@ pub(crate) enum AppCommand {
     Quit,
 }
 
+#[derive(Clone, Debug)]
+struct TrayCommandIds {
+    capture_now: MenuId,
+    start_pause: MenuId,
+    interval_items: Vec<(u64, MenuId)>,
+    capture_source_auto: MenuId,
+    capture_source_refresh: MenuId,
+    capture_source_items: Vec<(u32, MenuId)>,
+    generate_video: MenuId,
+    history_videos: MenuId,
+    open_output_dir: MenuId,
+    language_items: Vec<(Language, MenuId)>,
+    about: MenuId,
+    quit: MenuId,
+}
+
 pub(crate) fn create_tray_state(
     config: &Arc<Mutex<Config>>,
     is_running: bool,
+    logger: &Logger,
 ) -> AppResult<TrayState> {
     let config = config
         .lock()
         .map_err(|error| io::Error::other(error.to_string()))?
         .clone();
-    let screen_infos = available_screen_infos().unwrap_or_default();
+    let screen_infos = match available_screen_infos() {
+        Ok(screen_infos) => screen_infos,
+        Err(error) => {
+            logger.warn(format!(
+                "启动时枚举屏幕列表失败，托盘屏幕列表暂为空，可点击刷新重试: {error}"
+            ));
+            Vec::new()
+        }
+    };
     let controls = build_menu(
         config.interval,
         config.language,
@@ -193,6 +222,30 @@ fn build_menu(
         &quit,
     ])?;
 
+    let command_ids = TrayCommandIds {
+        capture_now: capture_now.id().clone(),
+        start_pause: start_pause.id().clone(),
+        interval_items: interval_items
+            .iter()
+            .map(|(seconds, item)| (*seconds, item.id().clone()))
+            .collect(),
+        capture_source_auto: capture_source_auto.id().clone(),
+        capture_source_refresh: capture_source_refresh.id().clone(),
+        capture_source_items: capture_source_items
+            .iter()
+            .map(|(screen_index, item)| (*screen_index, item.id().clone()))
+            .collect(),
+        generate_video: generate_video.id().clone(),
+        history_videos: history_videos.id().clone(),
+        open_output_dir: open_output_dir.id().clone(),
+        language_items: language_items
+            .iter()
+            .map(|(language, item)| (*language, item.id().clone()))
+            .collect(),
+        about: about.id().clone(),
+        quit: quit.id().clone(),
+    };
+
     Ok(TrayControls {
         menu,
         capture_now,
@@ -211,63 +264,68 @@ fn build_menu(
         language_items,
         about,
         quit,
+        command_ids,
     })
 }
 
 pub(crate) fn command_for_event(event: &MenuEvent, controls: &TrayControls) -> Option<AppCommand> {
-    if event.id == controls.capture_now.id() {
+    command_for_menu_id(&event.id, &controls.command_ids)
+}
+
+fn command_for_menu_id(id: &MenuId, command_ids: &TrayCommandIds) -> Option<AppCommand> {
+    if id == &command_ids.capture_now {
         return Some(AppCommand::CaptureNow);
     }
 
-    if event.id == controls.start_pause.id() {
+    if id == &command_ids.start_pause {
         return Some(AppCommand::ToggleRunning);
     }
 
-    for (seconds, item) in &controls.interval_items {
-        if event.id == item.id() {
+    for (seconds, item_id) in &command_ids.interval_items {
+        if id == item_id {
             return Some(AppCommand::SetInterval(*seconds));
         }
     }
 
-    if event.id == controls.capture_source_auto.id() {
+    if id == &command_ids.capture_source_auto {
         return Some(AppCommand::SetCaptureMode(CaptureMode::Auto));
     }
 
-    for (screen_index, item) in &controls.capture_source_items {
-        if event.id == item.id() {
+    for (screen_index, item_id) in &command_ids.capture_source_items {
+        if id == item_id {
             return Some(AppCommand::SetCaptureMode(CaptureMode::Screen(
                 *screen_index,
             )));
         }
     }
 
-    if event.id == controls.capture_source_refresh.id() {
+    if id == &command_ids.capture_source_refresh {
         return Some(AppCommand::RefreshCaptureSources);
     }
 
-    for (language, item) in &controls.language_items {
-        if event.id == item.id() {
+    for (language, item_id) in &command_ids.language_items {
+        if id == item_id {
             return Some(AppCommand::SetLanguage(*language));
         }
     }
 
-    if event.id == controls.generate_video.id() {
+    if id == &command_ids.generate_video {
         return Some(AppCommand::GenerateTodayVideo);
     }
 
-    if event.id == controls.history_videos.id() {
+    if id == &command_ids.history_videos {
         return Some(AppCommand::OpenHistoryVideos);
     }
 
-    if event.id == controls.open_output_dir.id() {
+    if id == &command_ids.open_output_dir {
         return Some(AppCommand::OpenOutputDir);
     }
 
-    if event.id == controls.about.id() {
+    if id == &command_ids.about {
         return Some(AppCommand::OpenAbout);
     }
 
-    if event.id == controls.quit.id() {
+    if id == &command_ids.quit {
         return Some(AppCommand::Quit);
     }
 
@@ -393,6 +451,11 @@ fn replace_capture_source_screens(
     item_refs.push(&controls.capture_source_refresh as &dyn IsMenuItem);
     controls.capture_source_menu.append_items(&item_refs)?;
     controls.capture_source_items = capture_source_items;
+    controls.command_ids.capture_source_items = controls
+        .capture_source_items
+        .iter()
+        .map(|(screen_index, item)| (*screen_index, item.id().clone()))
+        .collect();
     controls.capture_source_screens = screen_infos;
     update_capture_source_menu(controls, effective_mode, language);
     Ok(effective_mode)
@@ -462,6 +525,26 @@ fn put_pixel(rgba: &mut [u8], width: u32, x: u32, y: u32, color: [u8; 4]) {
 mod tests {
     use super::*;
 
+    fn test_command_ids() -> TrayCommandIds {
+        TrayCommandIds {
+            capture_now: MenuId::new("capture-now"),
+            start_pause: MenuId::new("start-pause"),
+            interval_items: vec![(30, MenuId::new("interval-30"))],
+            capture_source_auto: MenuId::new("capture-source-auto"),
+            capture_source_refresh: MenuId::new("capture-source-refresh"),
+            capture_source_items: vec![(2, MenuId::new("capture-source-screen-2"))],
+            generate_video: MenuId::new("generate-video"),
+            history_videos: MenuId::new("history-videos"),
+            open_output_dir: MenuId::new("open-output-dir"),
+            language_items: vec![
+                (Language::ZhCn, MenuId::new("language-zh-cn")),
+                (Language::En, MenuId::new("language-en")),
+            ],
+            about: MenuId::new("about"),
+            quit: MenuId::new("quit"),
+        }
+    }
+
     #[test]
     fn status_tooltip_includes_runtime_state() {
         let tooltip = status_tooltip(Language::ZhCn, true, 30, 2, Some("已保存 screen.png"));
@@ -484,100 +567,82 @@ mod tests {
 
     #[test]
     fn command_for_event_detects_language_items() {
-        let controls =
-            build_menu(30, Language::ZhCn, CaptureMode::Auto, Vec::new()).expect("build menu");
-        assert_eq!(controls.language_items.len(), Language::ALL.len());
-
-        let english_item = controls
-            .language_items
-            .iter()
-            .find(|(language, _)| *language == Language::En)
-            .map(|(_, item)| item)
-            .expect("english item");
-        let event = MenuEvent {
-            id: english_item.id().clone(),
-        };
+        let command_ids = test_command_ids();
 
         assert_eq!(
-            command_for_event(&event, &controls),
+            command_for_menu_id(&MenuId::new("language-en"), &command_ids),
             Some(AppCommand::SetLanguage(Language::En))
         );
     }
 
     #[test]
     fn command_for_event_detects_history_videos() {
-        let controls =
-            build_menu(30, Language::ZhCn, CaptureMode::Auto, Vec::new()).expect("build menu");
-        let event = MenuEvent {
-            id: controls.history_videos.id().clone(),
-        };
+        let command_ids = test_command_ids();
 
         assert_eq!(
-            command_for_event(&event, &controls),
+            command_for_menu_id(&MenuId::new("history-videos"), &command_ids),
             Some(AppCommand::OpenHistoryVideos)
         );
     }
 
     #[test]
     fn command_for_event_detects_about() {
-        let controls =
-            build_menu(30, Language::ZhCn, CaptureMode::Auto, Vec::new()).expect("build menu");
-        let event = MenuEvent {
-            id: controls.about.id().clone(),
-        };
+        let command_ids = test_command_ids();
 
         assert_eq!(
-            command_for_event(&event, &controls),
+            command_for_menu_id(&MenuId::new("about"), &command_ids),
             Some(AppCommand::OpenAbout)
         );
     }
 
     #[test]
     fn command_for_event_detects_capture_source_items() {
-        let screens = vec![CaptureScreenInfo {
-            index: 2,
-            id: 20,
-            x: 100,
-            y: 0,
-            width: 1920,
-            height: 1080,
-            scale_factor: 1.0,
-            is_primary: false,
-        }];
-        let controls =
-            build_menu(30, Language::ZhCn, CaptureMode::Auto, screens).expect("build menu");
-        let auto_event = MenuEvent {
-            id: controls.capture_source_auto.id().clone(),
-        };
+        let command_ids = test_command_ids();
         assert_eq!(
-            command_for_event(&auto_event, &controls),
+            command_for_menu_id(&MenuId::new("capture-source-auto"), &command_ids),
             Some(AppCommand::SetCaptureMode(CaptureMode::Auto))
         );
 
-        let screen_event = MenuEvent {
-            id: controls.capture_source_items[0].1.id().clone(),
-        };
         assert_eq!(
-            command_for_event(&screen_event, &controls),
+            command_for_menu_id(&MenuId::new("capture-source-screen-2"), &command_ids),
             Some(AppCommand::SetCaptureMode(CaptureMode::Screen(2)))
         );
     }
 
     #[test]
     fn command_for_event_detects_capture_source_refresh() {
-        let controls =
-            build_menu(30, Language::ZhCn, CaptureMode::Auto, Vec::new()).expect("build menu");
-        let event = MenuEvent {
-            id: controls.capture_source_refresh.id().clone(),
-        };
+        let command_ids = test_command_ids();
 
         assert_eq!(
-            command_for_event(&event, &controls),
+            command_for_menu_id(&MenuId::new("capture-source-refresh"), &command_ids),
             Some(AppCommand::RefreshCaptureSources)
         );
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "muda 0.19 requires native menus to be created on the main thread on macOS"
+    )]
+    fn build_menu_with_empty_screens_keeps_refresh_command() {
+        let controls =
+            build_menu(30, Language::ZhCn, CaptureMode::Auto, Vec::new()).expect("build menu");
+
+        assert!(controls.capture_source_items.is_empty());
+        assert_eq!(
+            command_for_menu_id(
+                &controls.command_ids.capture_source_refresh,
+                &controls.command_ids
+            ),
+            Some(AppCommand::RefreshCaptureSources)
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "muda 0.19 requires native menus to be created on the main thread on macOS"
+    )]
     fn replace_capture_source_screens_rebuilds_items_and_falls_back_when_selected_missing() {
         let initial_screens = vec![CaptureScreenInfo {
             index: 2,
