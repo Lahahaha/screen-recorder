@@ -3,7 +3,7 @@ use crate::{
     config::load_config,
     i18n::{Text, APP_NAME},
     logging::Logger,
-    paths::AppPaths,
+    paths::{display_path, AppPaths},
     platform,
 };
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
@@ -143,8 +143,12 @@ impl eframe::App for AboutApp {
                     ui.strong(text.homepage_label());
                     ui.hyperlink_to(APP_HOMEPAGE, APP_HOMEPAGE);
                     ui.end_row();
-                    about_row(ui, text.save_folder_label(), self.paths.root.display());
-                    about_row(ui, text.config_file_label(), self.paths.config.display());
+                    about_row(ui, text.save_folder_label(), display_path(&self.paths.root));
+                    about_row(
+                        ui,
+                        text.config_file_label(),
+                        display_path(&self.paths.config),
+                    );
                 });
 
             ui.add_space(16.0);

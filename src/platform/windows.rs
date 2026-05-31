@@ -20,6 +20,7 @@ const DESKTOP_SWITCHDESKTOP: Dword = 0x0100;
 extern "system" {
     fn CloseDesktop(hdesktop: Hdesk) -> Bool;
     fn OpenInputDesktop(dw_flags: Dword, inherit: Bool, desired_access: Dword) -> Hdesk;
+    fn SwitchDesktop(hdesktop: Hdesk) -> Bool;
 }
 
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
@@ -106,12 +107,13 @@ pub(crate) fn screen_locked() -> AppResult<bool> {
         return Ok(true);
     }
 
+    let can_switch_to_desktop = unsafe { SwitchDesktop(desktop) } != 0;
     let closed = unsafe { CloseDesktop(desktop) };
     if closed == 0 {
         return Err(io::Error::last_os_error().into());
     }
 
-    Ok(false)
+    Ok(!can_switch_to_desktop)
 }
 
 pub(crate) fn hide_console(cmd: &mut Command) {

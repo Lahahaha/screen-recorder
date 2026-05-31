@@ -118,6 +118,24 @@ impl AppPaths {
     }
 }
 
+pub(crate) fn display_path(path: &Path) -> String {
+    format_path_for_display(&path.display().to_string())
+}
+
+fn format_path_for_display(value: &str) -> String {
+    const WINDOWS_VERBATIM_UNC_PREFIX: &str = "\\\\?\\UNC\\";
+    const WINDOWS_VERBATIM_PREFIX: &str = "\\\\?\\";
+
+    if let Some(stripped) = value.strip_prefix(WINDOWS_VERBATIM_UNC_PREFIX) {
+        return format!("\\\\{stripped}");
+    }
+    if let Some(stripped) = value.strip_prefix(WINDOWS_VERBATIM_PREFIX) {
+        return stripped.to_string();
+    }
+
+    value.to_string()
+}
+
 fn canonicalize_dir(path: &Path) -> AppResult<PathBuf> {
     path.canonicalize().map_err(|error| {
         io::Error::new(
@@ -157,5 +175,21 @@ mod tests {
         assert!(!paths.config.exists());
         assert_eq!(paths.screenshots, paths.root.join("screenshots"));
         assert_eq!(paths.videos, paths.root.join("videos"));
+    }
+
+    #[test]
+    fn display_path_strips_windows_verbatim_drive_prefix() {
+        assert_eq!(
+            format_path_for_display(r"\\?\C:\Users\hang\ScreenRecorder"),
+            r"C:\Users\hang\ScreenRecorder"
+        );
+    }
+
+    #[test]
+    fn display_path_strips_windows_verbatim_unc_prefix() {
+        assert_eq!(
+            format_path_for_display(r"\\?\UNC\server\share\ScreenRecorder"),
+            r"\\server\share\ScreenRecorder"
+        );
     }
 }

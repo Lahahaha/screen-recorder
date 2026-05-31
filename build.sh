@@ -4,6 +4,7 @@ set -euo pipefail
 APP_NAME="${APP_NAME:-ScreenRecorder}"
 APP_BUNDLE="${APP_BUNDLE:-$APP_NAME.app}"
 BINARY_NAME="${BINARY_NAME:-screen-recorder}"
+APP_VERSION="${APP_VERSION:-0.12.2}"
 BINARY_PATH="target/release/$BINARY_NAME"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
@@ -59,9 +60,9 @@ else
     <key>CFBundleIdentifier</key>
     <string>com.screen-recorder.app</string>
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>$APP_VERSION</string>
     <key>CFBundleExecutable</key>
     <string>$BINARY_NAME</string>
     <key>CFBundlePackageType</key>

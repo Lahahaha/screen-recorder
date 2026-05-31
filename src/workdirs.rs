@@ -3,7 +3,7 @@ use crate::{
     config::{load_config, Language},
     i18n::Text,
     logging::Logger,
-    paths::AppPaths,
+    paths::{display_path, AppPaths},
     platform,
     single_instance::{InstanceGuard, InstanceKind},
 };
@@ -832,7 +832,7 @@ impl eframe::App for WorkdirsApp {
             .show_inside(ui, |ui| {
                 let next_root = selected_root
                     .as_ref()
-                    .map(|path| path.display().to_string())
+                    .map(|path| display_path(path))
                     .unwrap_or_else(|| "-".to_string());
                 let summary_width = ui.available_width();
                 let summary_origin = ui.cursor().min;
@@ -844,7 +844,7 @@ impl eframe::App for WorkdirsApp {
                         egui::vec2(card_width, WORKDIR_SUMMARY_HEIGHT),
                     ),
                     text.current_workdir_label(),
-                    &self.paths.root.display().to_string(),
+                    &display_path(&self.paths.root),
                     summary_badge(self.language, true),
                     true,
                     palette,
@@ -1210,7 +1210,7 @@ fn show_workdir_row(
         path_top,
         egui::pos2(path_top.left(), path_top.center().y),
         egui::Align2::LEFT_CENTER,
-        &entry.root.display().to_string(),
+        &display_path(&entry.root),
         egui::FontId::monospace(15.0),
         palette.text,
     );
