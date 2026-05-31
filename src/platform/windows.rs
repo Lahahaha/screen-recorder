@@ -10,16 +10,16 @@ use std::{
     thread,
 };
 
-type BOOL = i32;
-type DWORD = u32;
-type HDESK = isize;
+type Bool = i32;
+type Dword = u32;
+type Hdesk = isize;
 
-const DESKTOP_SWITCHDESKTOP: DWORD = 0x0100;
+const DESKTOP_SWITCHDESKTOP: Dword = 0x0100;
 
 #[link(name = "user32")]
 extern "system" {
-    fn CloseDesktop(hdesktop: HDESK) -> BOOL;
-    fn OpenInputDesktop(dw_flags: DWORD, inherit: BOOL, desired_access: DWORD) -> HDESK;
+    fn CloseDesktop(hdesktop: Hdesk) -> Bool;
+    fn OpenInputDesktop(dw_flags: Dword, inherit: Bool, desired_access: Dword) -> Hdesk;
 }
 
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
