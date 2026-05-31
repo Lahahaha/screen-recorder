@@ -4,23 +4,70 @@ use crate::{
     platform::{find_ffmpeg_binary, rename_with_context},
 };
 use std::{
-    fs, io,
+    ffi::c_void,
+    fs, io, mem,
     path::{Path, PathBuf},
     process::Command,
-    thread,
+    ptr, thread,
 };
 
 type Bool = i32;
 type Dword = u32;
-type Hdesk = isize;
+type Handle = isize;
+type WtsInfoClass = i32;
 
-const DESKTOP_SWITCHDESKTOP: Dword = 0x0100;
+const WTS_CURRENT_SERVER_HANDLE: Handle = 0;
+const WTS_CURRENT_SESSION: Dword = Dword::MAX;
+const WTS_SESSION_INFO_EX: WtsInfoClass = 25;
+const WTS_INFO_EX_LEVEL1: Dword = 1;
+const WTS_SESSIONSTATE_LOCK: i32 = 0;
+const WTS_SESSIONSTATE_UNLOCK: i32 = 1;
+const WTS_SESSIONSTATE_UNKNOWN: i32 = -1;
 
-#[link(name = "user32")]
+#[repr(C)]
+struct WtsInfoExW {
+    level: Dword,
+    data: WtsInfoExLevelW,
+}
+
+#[repr(C)]
+union WtsInfoExLevelW {
+    level1: WtsInfoExLevel1W,
+}
+
+#[allow(dead_code)]
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WtsInfoExLevel1W {
+    session_id: Dword,
+    session_state: i32,
+    session_flags: i32,
+    win_station_name: [u16; 33],
+    user_name: [u16; 21],
+    domain_name: [u16; 18],
+    logon_time: i64,
+    connect_time: i64,
+    disconnect_time: i64,
+    last_input_time: i64,
+    current_time: i64,
+    incoming_bytes: Dword,
+    outgoing_bytes: Dword,
+    incoming_frames: Dword,
+    outgoing_frames: Dword,
+    incoming_compressed_bytes: Dword,
+    outgoing_compressed_bytes: Dword,
+}
+
+#[link(name = "wtsapi32")]
 extern "system" {
-    fn CloseDesktop(hdesktop: Hdesk) -> Bool;
-    fn OpenInputDesktop(dw_flags: Dword, inherit: Bool, desired_access: Dword) -> Hdesk;
-    fn SwitchDesktop(hdesktop: Hdesk) -> Bool;
+    fn WTSFreeMemory(memory: *mut c_void);
+    fn WTSQuerySessionInformationW(
+        server: Handle,
+        session_id: Dword,
+        info_class: WtsInfoClass,
+        buffer: *mut *mut u16,
+        bytes_returned: *mut Dword,
+    ) -> Bool;
 }
 
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
@@ -102,18 +149,57 @@ pub(crate) fn open_path(path: &Path) -> AppResult<()> {
 }
 
 pub(crate) fn screen_locked() -> AppResult<bool> {
-    let desktop = unsafe { OpenInputDesktop(0, 0, DESKTOP_SWITCHDESKTOP) };
-    if desktop == 0 {
+    let Some(session_flags) = query_session_flags() else {
         return Ok(true);
+    };
+    Ok(session_flags_indicate_locked(session_flags))
+}
+
+fn query_session_flags() -> Option<i32> {
+    let mut buffer = ptr::null_mut::<u16>();
+    let mut bytes_returned = 0;
+    let query_ok = unsafe {
+        WTSQuerySessionInformationW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            WTS_SESSION_INFO_EX,
+            &mut buffer,
+            &mut bytes_returned,
+        )
+    };
+    if query_ok == 0 || buffer.is_null() {
+        return None;
     }
 
-    let can_switch_to_desktop = unsafe { SwitchDesktop(desktop) } != 0;
-    let closed = unsafe { CloseDesktop(desktop) };
-    if closed == 0 {
-        return Err(io::Error::last_os_error().into());
+    let _memory = WtsMemory(buffer.cast::<c_void>());
+    if (bytes_returned as usize) < mem::size_of::<WtsInfoExW>() {
+        return None;
     }
 
-    Ok(!can_switch_to_desktop)
+    let info = unsafe { &*(buffer.cast::<WtsInfoExW>()) };
+    if info.level != WTS_INFO_EX_LEVEL1 {
+        return None;
+    }
+
+    Some(unsafe { info.data.level1.session_flags })
+}
+
+fn session_flags_indicate_locked(session_flags: i32) -> bool {
+    match session_flags {
+        WTS_SESSIONSTATE_UNLOCK => false,
+        WTS_SESSIONSTATE_LOCK | WTS_SESSIONSTATE_UNKNOWN => true,
+        _ => true,
+    }
+}
+
+struct WtsMemory(*mut c_void);
+
+impl Drop for WtsMemory {
+    fn drop(&mut self) {
+        unsafe {
+            WTSFreeMemory(self.0);
+        }
+    }
 }
 
 pub(crate) fn hide_console(cmd: &mut Command) {
@@ -123,4 +209,29 @@ pub(crate) fn hide_console(cmd: &mut Command) {
 
 fn escape_powershell_single_quoted(value: &str) -> String {
     value.replace('\'', "''")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_flags_treat_lock_as_locked() {
+        assert!(session_flags_indicate_locked(WTS_SESSIONSTATE_LOCK));
+    }
+
+    #[test]
+    fn session_flags_treat_unlock_as_unlocked() {
+        assert!(!session_flags_indicate_locked(WTS_SESSIONSTATE_UNLOCK));
+    }
+
+    #[test]
+    fn session_flags_treat_unknown_as_locked() {
+        assert!(session_flags_indicate_locked(WTS_SESSIONSTATE_UNKNOWN));
+    }
+
+    #[test]
+    fn session_flags_treat_unexpected_value_as_locked() {
+        assert!(session_flags_indicate_locked(42));
+    }
 }

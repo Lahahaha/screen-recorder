@@ -629,10 +629,10 @@ fn run_capture_loop(
                         }
                         Err(error) => {
                             if !lock_state_error_reported {
-                                logger.warn(format!("读取锁屏状态失败，按未锁屏处理: {error}"));
+                                logger.warn(format!("读取锁屏状态失败，按已锁屏处理: {error}"));
                                 lock_state_error_reported = true;
                             }
-                            false
+                            true
                         }
                     }
                 } else {

@@ -4,7 +4,7 @@ set -euo pipefail
 APP_NAME="${APP_NAME:-ScreenRecorder}"
 APP_BUNDLE="${APP_BUNDLE:-$APP_NAME.app}"
 BINARY_NAME="${BINARY_NAME:-screen-recorder}"
-APP_VERSION="${APP_VERSION:-0.12.2}"
+APP_VERSION="${APP_VERSION:-0.12.3}"
 BINARY_PATH="target/release/$BINARY_NAME"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
