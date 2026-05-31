@@ -8,6 +8,9 @@ on:
       - 'v*'
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   checks:
     strategy:
@@ -15,7 +18,7 @@ jobs:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -25,21 +28,21 @@ jobs:
         run: cargo fmt --check
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --locked
 
   build-macos:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - uses: dtolnay/rust-toolchain@stable
       
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       
       - name: Create app bundle
         run: |
@@ -64,21 +67,21 @@ jobs:
           zip -r ScreenRecorder-macos-arm64.zip ScreenRecorder.app
       
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ScreenRecorder-macos
           path: ScreenRecorder-macos-arm64.zip
 
   build-windows:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - uses: dtolnay/rust-toolchain@stable
       
       - name: Build
-        run: cargo build --release
+        run: cargo build --release --locked
       
       - name: Download ffmpeg
         run: |
@@ -93,29 +96,27 @@ jobs:
           Compress-Archive -Path ScreenRecorder\* -DestinationPath ScreenRecorder-windows-x64.zip
       
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ScreenRecorder-windows
           path: ScreenRecorder-windows-x64.zip
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
       
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/ScreenRecorder-macos/ScreenRecorder-macos-arm64.zip
             artifacts/ScreenRecorder-windows/ScreenRecorder-windows-x64.zip
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -647,9 +647,7 @@ fn duplicate_capture_report(
     target_screen_count: usize,
     failed_screen_count: usize,
 ) -> Option<CaptureReport> {
-    let Some(previous) = state.last_capture.as_ref() else {
-        return None;
-    };
+    let previous = state.last_capture.as_ref()?;
     if previous.output_dir == output_dir && previous.screens == screens {
         if !previous_capture_files_exist(previous) {
             state.last_capture = None;
