@@ -1,3 +1,16 @@
+mod dedup;
+mod geometry;
+
+use self::{
+    dedup::{
+        clear_capture_fingerprint, duplicate_capture_report, screen_fingerprints,
+        store_capture_fingerprint, CaptureBatchFingerprint,
+    },
+    geometry::{
+        captured_geometry, geometry_inputs_for_targets, scaled_geometries,
+        single_screen_geometries, SavedGeometry,
+    },
+};
 use crate::{
     app::AppResult,
     config::{CaptureMode, Config, ScreenshotFormat},
@@ -20,7 +33,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
 };
-use xxhash_rust::xxh3::Xxh3;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CaptureScreenInfo {
@@ -65,9 +77,18 @@ impl CaptureReport {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct CaptureSession {
+    capture_gate: Mutex<()>,
     state: Mutex<CaptureState>,
+}
+
+impl Default for CaptureSession {
+    fn default() -> Self {
+        Self {
+            capture_gate: Mutex::new(()),
+            state: Mutex::new(CaptureState::default()),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -86,43 +107,6 @@ struct IndexedScreen {
 struct CapturedScreen {
     info: CaptureScreenInfo,
     image: DynamicImage,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CaptureBatchFingerprint {
-    output_dir: PathBuf,
-    screens: Vec<ScreenFingerprint>,
-    paths: Vec<PathBuf>,
-    metadata_path: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ScreenFingerprint {
-    screen_index: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    hash: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SavedGeometry {
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct GeometryInput {
-    screen_index: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    saved_width: u32,
-    saved_height: u32,
 }
 
 pub(crate) fn available_screen_infos() -> AppResult<Vec<CaptureScreenInfo>> {
@@ -150,12 +134,20 @@ impl CaptureSession {
             .map_err(|error| io::Error::other(error.to_string()).into())
     }
 
+    fn lock_capture_gate(&self) -> std::sync::MutexGuard<'_, ()> {
+        match self.capture_gate.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        }
+    }
+
     pub(crate) fn capture_once(
         &self,
         paths: &AppPaths,
         config: &Config,
         logger: &Logger,
     ) -> AppResult<CaptureReport> {
+        let _capture_gate = self.lock_capture_gate();
         let timestamp = Local::now();
         let today = timestamp.format("%Y-%m-%d").to_string();
         let now = timestamp.format("%H-%M-%S%.3f").to_string();
@@ -640,241 +632,19 @@ fn prepare_screenshot_image(image: RgbaImage, scale: f32) -> DynamicImage {
     image.resize_exact(width, height, FilterType::Lanczos3)
 }
 
-fn duplicate_capture_report(
-    state: &mut CaptureState,
-    output_dir: &Path,
-    screens: &[ScreenFingerprint],
-    target_screen_count: usize,
-    failed_screen_count: usize,
-) -> Option<CaptureReport> {
-    let previous = state.last_capture.as_ref()?;
-    if previous.output_dir == output_dir && previous.screens == screens {
-        if !previous_capture_files_exist(previous) {
-            state.last_capture = None;
-            return None;
-        }
-        return Some(CaptureReport {
-            saved_paths: Vec::new(),
-            previous_paths: previous.paths.clone(),
-            metadata_path: previous.metadata_path.clone(),
-            target_screen_count,
-            failed_screen_count,
-            skipped_duplicate: true,
-        });
-    }
-    None
-}
-
-fn previous_capture_files_exist(previous: &CaptureBatchFingerprint) -> bool {
-    !previous.paths.is_empty()
-        && previous.paths.iter().all(|path| path.exists())
-        && match &previous.metadata_path {
-            Some(path) => path.exists(),
-            None => true,
-        }
-}
-
-fn store_capture_fingerprint(state: &mut CaptureState, fingerprint: CaptureBatchFingerprint) {
-    state.last_capture = Some(fingerprint);
-}
-
-fn clear_capture_fingerprint(state: &mut CaptureState) {
-    state.last_capture = None;
-}
-
-fn screen_fingerprints(
-    captured: &[CapturedScreen],
-    geometries: &BTreeMap<u32, SavedGeometry>,
-) -> Vec<ScreenFingerprint> {
-    let mut fingerprints = captured
-        .iter()
-        .map(|capture| {
-            let geometry = geometries
-                .get(&capture.info.index)
-                .copied()
-                .unwrap_or_else(|| captured_geometry(capture));
-            ScreenFingerprint {
-                screen_index: capture.info.index,
-                x: geometry.x,
-                y: geometry.y,
-                width: geometry.width,
-                height: geometry.height,
-                hash: rgba_buffer_hash(&capture.image),
-            }
-        })
-        .collect::<Vec<_>>();
-    fingerprints.sort_by_key(|fingerprint| fingerprint.screen_index);
-    fingerprints
-}
-
-fn single_screen_geometries(captured: &[CapturedScreen]) -> BTreeMap<u32, SavedGeometry> {
-    captured
-        .iter()
-        .map(|capture| (capture.info.index, captured_geometry(capture)))
-        .collect()
-}
-
-fn captured_geometry(capture: &CapturedScreen) -> SavedGeometry {
-    SavedGeometry {
-        x: 0,
-        y: 0,
-        width: capture.image.width(),
-        height: capture.image.height(),
-    }
-}
-
-fn geometry_inputs_for_targets(
-    targets: &[IndexedScreen],
-    captured: &[CapturedScreen],
-    scale: f32,
-) -> Vec<GeometryInput> {
-    targets
-        .iter()
-        .map(|target| {
-            let captured = captured
-                .iter()
-                .find(|capture| capture.info.index == target.info.index);
-            let (saved_width, saved_height) = captured
-                .map(|capture| (capture.image.width(), capture.image.height()))
-                .unwrap_or_else(|| estimated_saved_dimensions(target.info, scale));
-            GeometryInput {
-                screen_index: target.info.index,
-                x: target.info.x,
-                y: target.info.y,
-                width: target.info.width.max(1),
-                height: target.info.height.max(1),
-                saved_width,
-                saved_height,
-            }
-        })
-        .collect()
-}
-
-fn estimated_saved_dimensions(info: CaptureScreenInfo, scale: f32) -> (u32, u32) {
-    let scale = f64::from(scale.max(f32::EPSILON));
-    let width = (f64::from(info.width) * info.scale_factor * scale)
-        .round()
-        .max(1.0) as u32;
-    let height = (f64::from(info.height) * info.scale_factor * scale)
-        .round()
-        .max(1.0) as u32;
-    (width, height)
-}
-
-fn scaled_geometries(inputs: &[GeometryInput]) -> BTreeMap<u32, SavedGeometry> {
-    let x_offsets = axis_offsets(inputs, Axis::X);
-    let y_offsets = axis_offsets(inputs, Axis::Y);
-    inputs
-        .iter()
-        .map(|input| {
-            (
-                input.screen_index,
-                SavedGeometry {
-                    x: *x_offsets.get(&input.x).unwrap_or(&0),
-                    y: *y_offsets.get(&input.y).unwrap_or(&0),
-                    width: input.saved_width,
-                    height: input.saved_height,
-                },
-            )
-        })
-        .collect()
-}
-
-#[derive(Clone, Copy)]
-enum Axis {
-    X,
-    Y,
-}
-
-fn axis_offsets(inputs: &[GeometryInput], axis: Axis) -> BTreeMap<i32, i32> {
-    let mut edges = inputs
-        .iter()
-        .flat_map(|input| {
-            let start = axis_start(*input, axis);
-            let end = start + axis_logical_size(*input, axis) as i32;
-            [start, end]
-        })
-        .collect::<Vec<_>>();
-    edges.sort();
-    edges.dedup();
-
-    let mut offsets = BTreeMap::new();
-    let mut current = 0_i32;
-    for window in edges.windows(2) {
-        let start = window[0];
-        let end = window[1];
-        offsets.insert(start, current);
-        let distance = end.saturating_sub(start);
-        let scale = axis_segment_scale(inputs, axis, start, end);
-        current += (f64::from(distance) * scale).round().max(0.0) as i32;
-    }
-    if let Some(last) = edges.last() {
-        offsets.insert(*last, current);
-    }
-    offsets
-}
-
-fn axis_segment_scale(inputs: &[GeometryInput], axis: Axis, start: i32, end: i32) -> f64 {
-    inputs
-        .iter()
-        .filter_map(|input| {
-            let input_start = axis_start(*input, axis);
-            let input_end = input_start + axis_logical_size(*input, axis) as i32;
-            if start < input_start || end > input_end {
-                return None;
-            }
-            let logical = f64::from(axis_logical_size(*input, axis).max(1));
-            let saved = f64::from(axis_saved_size(*input, axis).max(1));
-            Some(saved / logical)
-        })
-        .reduce(f64::max)
-        .unwrap_or(1.0)
-}
-
-fn axis_start(input: GeometryInput, axis: Axis) -> i32 {
-    match axis {
-        Axis::X => input.x,
-        Axis::Y => input.y,
-    }
-}
-
-fn axis_logical_size(input: GeometryInput, axis: Axis) -> u32 {
-    match axis {
-        Axis::X => input.width,
-        Axis::Y => input.height,
-    }
-}
-
-fn axis_saved_size(input: GeometryInput, axis: Axis) -> u32 {
-    match axis {
-        Axis::X => input.saved_width,
-        Axis::Y => input.saved_height,
-    }
-}
-
-fn rgba_buffer_hash(image: &DynamicImage) -> u64 {
-    if let Some(rgba) = image.as_rgba8() {
-        return rgba_raw_hash(rgba.width(), rgba.height(), rgba.as_raw());
-    }
-
-    let rgba = image.to_rgba8();
-    rgba_raw_hash(rgba.width(), rgba.height(), rgba.as_raw())
-}
-
-fn rgba_raw_hash(width: u32, height: u32, rgba: &[u8]) -> u64 {
-    let mut hasher = Xxh3::new();
-    hasher.update(&width.to_le_bytes());
-    hasher.update(&height.to_le_bytes());
-    hasher.update(rgba);
-    hasher.digest()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::screenshot_naming::screenshot_format_for_path;
     use chrono::Local;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            mpsc, Arc,
+        },
+        thread,
+        time::Duration,
+    };
 
     static TEST_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -921,6 +691,43 @@ mod tests {
     }
 
     #[test]
+    fn capture_session_gate_serializes_capture_work() {
+        let session = Arc::new(CaptureSession::new());
+        let gate = session.lock_capture_gate();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let worker_session = Arc::clone(&session);
+        let handle = thread::spawn(move || {
+            started_tx.send(()).expect("send worker start");
+            let _gate = worker_session.lock_capture_gate();
+            acquired_tx.send(()).expect("send gate acquired");
+        });
+
+        started_rx.recv().expect("worker started");
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+
+        drop(gate);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker acquired gate after release");
+        handle.join().expect("worker joined");
+    }
+
+    #[test]
+    fn capture_session_gate_recovers_after_panic() {
+        let session = Arc::new(CaptureSession::new());
+        let poison_session = Arc::clone(&session);
+        let result = thread::spawn(move || {
+            let _gate = poison_session.lock_capture_gate();
+            panic!("poison capture gate");
+        })
+        .join();
+
+        assert!(result.is_err());
+        let _gate = session.lock_capture_gate();
+    }
+
+    #[test]
     fn screenshot_format_for_path_accepts_supported_extensions() {
         assert_eq!(
             screenshot_format_for_path(Path::new("screen.PNG")),
@@ -958,36 +765,6 @@ mod tests {
 
         assert_eq!(scaled.width(), 1);
         assert_eq!(scaled.height(), 1);
-    }
-
-    #[test]
-    fn rgba_buffer_hash_matches_identical_rgba_images() {
-        let image = DynamicImage::ImageRgba8(
-            RgbaImage::from_raw(2, 1, vec![1, 2, 3, 4, 5, 6, 7, 8]).expect("image"),
-        );
-        let same = image.clone();
-
-        assert_eq!(rgba_buffer_hash(&image), rgba_buffer_hash(&same));
-    }
-
-    #[test]
-    fn rgba_buffer_hash_changes_when_pixels_change() {
-        let image =
-            DynamicImage::ImageRgba8(RgbaImage::from_raw(1, 1, vec![1, 2, 3, 4]).expect("image"));
-        let changed =
-            DynamicImage::ImageRgba8(RgbaImage::from_raw(1, 1, vec![1, 2, 3, 5]).expect("image"));
-
-        assert_ne!(rgba_buffer_hash(&image), rgba_buffer_hash(&changed));
-    }
-
-    #[test]
-    fn rgba_buffer_hash_includes_dimensions() {
-        let pixels = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let tall =
-            DynamicImage::ImageRgba8(RgbaImage::from_raw(1, 2, pixels.clone()).expect("image"));
-        let wide = DynamicImage::ImageRgba8(RgbaImage::from_raw(2, 1, pixels).expect("image"));
-
-        assert_ne!(rgba_buffer_hash(&tall), rgba_buffer_hash(&wide));
     }
 
     #[test]
@@ -1226,184 +1003,6 @@ mod tests {
             labels,
             vec![("primary", 10, 1), ("left", 1, 2), ("right", 2, 3)]
         );
-    }
-
-    #[test]
-    fn multi_screen_geometry_uses_saved_pixel_offsets() {
-        let inputs = vec![
-            GeometryInput {
-                screen_index: 1,
-                x: 0,
-                y: 0,
-                width: 1470,
-                height: 956,
-                saved_width: 2940,
-                saved_height: 1912,
-            },
-            GeometryInput {
-                screen_index: 2,
-                x: 1470,
-                y: 0,
-                width: 1920,
-                height: 1080,
-                saved_width: 1920,
-                saved_height: 1080,
-            },
-        ];
-
-        let geometries = scaled_geometries(&inputs);
-
-        assert_eq!(geometries[&1].x, 0);
-        assert_eq!(geometries[&1].width, 2940);
-        assert_eq!(geometries[&2].x, 2940);
-        assert_eq!(geometries[&2].width, 1920);
-    }
-
-    #[test]
-    fn duplicate_report_matches_success_screen_set_and_geometry() {
-        let dir = test_dir();
-        let previous_path = dir.join("screen.png");
-        fs::write(&previous_path, b"image").expect("write previous screenshot");
-        let mut state = CaptureState::default();
-        let screens = vec![ScreenFingerprint {
-            screen_index: 1,
-            x: 0,
-            y: 0,
-            width: 10,
-            height: 10,
-            hash: 42,
-        }];
-        store_capture_fingerprint(
-            &mut state,
-            CaptureBatchFingerprint {
-                output_dir: dir.clone(),
-                screens: screens.clone(),
-                paths: vec![previous_path.clone()],
-                metadata_path: None,
-            },
-        );
-
-        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0).expect("duplicate");
-
-        assert!(report.skipped_duplicate);
-        assert!(report.saved_paths.is_empty());
-        assert_eq!(report.previous_paths, vec![previous_path]);
-    }
-
-    #[test]
-    fn duplicate_report_ignores_stale_missing_files() {
-        let dir = test_dir();
-        let mut state = CaptureState::default();
-        let screens = vec![ScreenFingerprint {
-            screen_index: 1,
-            x: 0,
-            y: 0,
-            width: 10,
-            height: 10,
-            hash: 42,
-        }];
-        let stale_path = dir.join("deleted-screen.png");
-        store_capture_fingerprint(
-            &mut state,
-            CaptureBatchFingerprint {
-                output_dir: dir.clone(),
-                screens: screens.clone(),
-                paths: vec![stale_path],
-                metadata_path: None,
-            },
-        );
-
-        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0);
-
-        assert!(report.is_none());
-    }
-
-    #[test]
-    fn duplicate_report_ignores_stale_missing_metadata() {
-        let dir = test_dir();
-        let image_path = dir.join("screen.png");
-        fs::write(&image_path, b"image").expect("write image");
-        let mut state = CaptureState::default();
-        let screens = vec![ScreenFingerprint {
-            screen_index: 1,
-            x: 0,
-            y: 0,
-            width: 10,
-            height: 10,
-            hash: 42,
-        }];
-        store_capture_fingerprint(
-            &mut state,
-            CaptureBatchFingerprint {
-                output_dir: dir.clone(),
-                screens: screens.clone(),
-                paths: vec![image_path],
-                metadata_path: Some(dir.join("deleted.screens.json")),
-            },
-        );
-
-        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0);
-
-        assert!(report.is_none());
-    }
-
-    #[test]
-    fn duplicate_report_returns_none_after_clear_capture_fingerprint() {
-        let dir = test_dir();
-        let previous_path = dir.join("screen.png");
-        fs::write(&previous_path, b"image").expect("write previous screenshot");
-        let mut state = CaptureState::default();
-        let screens = vec![ScreenFingerprint {
-            screen_index: 1,
-            x: 0,
-            y: 0,
-            width: 10,
-            height: 10,
-            hash: 42,
-        }];
-        store_capture_fingerprint(
-            &mut state,
-            CaptureBatchFingerprint {
-                output_dir: dir.clone(),
-                screens: screens.clone(),
-                paths: vec![previous_path],
-                metadata_path: None,
-            },
-        );
-
-        clear_capture_fingerprint(&mut state);
-
-        let report = duplicate_capture_report(&mut state, &dir, &screens, 1, 0);
-        assert!(report.is_none());
-    }
-
-    #[test]
-    fn duplicate_state_isolated_between_capture_states() {
-        let dir = test_dir();
-        let previous_path = dir.join("screen.png");
-        fs::write(&previous_path, b"image").expect("write previous screenshot");
-        let mut first = CaptureState::default();
-        let mut second = CaptureState::default();
-        let screens = vec![ScreenFingerprint {
-            screen_index: 1,
-            x: 0,
-            y: 0,
-            width: 10,
-            height: 10,
-            hash: 42,
-        }];
-        store_capture_fingerprint(
-            &mut first,
-            CaptureBatchFingerprint {
-                output_dir: dir.clone(),
-                screens: screens.clone(),
-                paths: vec![previous_path],
-                metadata_path: None,
-            },
-        );
-
-        assert!(duplicate_capture_report(&mut first, &dir, &screens, 1, 0).is_some());
-        assert!(duplicate_capture_report(&mut second, &dir, &screens, 1, 0).is_none());
     }
 
     #[test]
