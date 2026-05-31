@@ -10,6 +10,7 @@ use std::{
 pub(crate) enum InstanceKind {
     Main,
     History,
+    Workdirs,
 }
 
 pub(crate) struct InstanceGuard {
@@ -22,13 +23,15 @@ impl InstanceKind {
         match self {
             Self::Main => "screen-recorder-main.lock",
             Self::History => "screen-recorder-history.lock",
+            Self::Workdirs => "screen-recorder-workdirs.lock",
         }
     }
 }
 
 impl InstanceGuard {
     pub(crate) fn acquire(paths: &AppPaths, kind: InstanceKind) -> AppResult<Option<Self>> {
-        let path = paths.root.join(kind.lock_file_name());
+        fs::create_dir_all(&paths.control)?;
+        let path = paths.control.join(kind.lock_file_name());
         let mut file = match create_lock_file(&path)? {
             Some(file) => file,
             None => {
@@ -162,6 +165,7 @@ mod tests {
             std::process::id()
         ));
         AppPaths {
+            control: root.join("control"),
             config: root.join("config.json"),
             screenshots: root.join("screenshots"),
             videos: root.join("videos"),

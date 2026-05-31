@@ -1954,6 +1954,7 @@ mod tests {
 
     fn test_logger(root: &Path) -> Logger {
         let paths = AppPaths {
+            control: root.join("control"),
             root: root.to_path_buf(),
             config: root.join("config.json"),
             screenshots: root.join("screenshots"),

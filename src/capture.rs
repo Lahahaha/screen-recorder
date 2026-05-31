@@ -662,6 +662,7 @@ mod tests {
 
     fn test_logger(root: &Path) -> Logger {
         let paths = AppPaths {
+            control: root.join("control"),
             config: root.join("config.json"),
             screenshots: root.join("screenshots"),
             videos: root.join("videos"),
@@ -1010,6 +1011,7 @@ mod tests {
     fn real_multi_screen_capture_smoke() {
         let dir = test_dir();
         let paths = AppPaths {
+            control: dir.join("control"),
             config: dir.join("config.json"),
             screenshots: dir.join("screenshots"),
             videos: dir.join("videos"),

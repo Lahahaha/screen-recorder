@@ -25,8 +25,11 @@ use std::{
     time::Duration,
 };
 
-pub(crate) fn run() -> AppResult<()> {
-    let paths = AppPaths::new()?;
+pub(crate) fn run(workdir: Option<PathBuf>) -> AppResult<()> {
+    let paths = match workdir {
+        Some(root) => AppPaths::from_root(root)?,
+        None => AppPaths::new()?,
+    };
     let logger = Logger::new(&paths)?;
     let Some(_instance_guard) = InstanceGuard::acquire(&paths, InstanceKind::History)? else {
         logger.info("历史视频窗口已在运行，忽略本次启动");
@@ -1782,6 +1785,7 @@ mod tests {
 
     fn test_paths(root: &Path) -> AppPaths {
         let paths = AppPaths {
+            control: root.join("control"),
             root: root.to_path_buf(),
             config: root.join("config.json"),
             screenshots: root.join("screenshots"),

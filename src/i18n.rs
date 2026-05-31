@@ -51,6 +51,38 @@ pub(crate) struct TextBundle {
     capture_failed_title: &'static str,
     output_dir_failed_title: &'static str,
     history_videos: &'static str,
+    workdirs_menu: &'static str,
+    workdirs_window_title: &'static str,
+    current_workdir_label: &'static str,
+    next_workdir_label: &'static str,
+    add_workdir: &'static str,
+    open_workdir: &'static str,
+    switch_workdir: &'static str,
+    delete_workdir: &'static str,
+    remove_workdir_record: &'static str,
+    workdir_status_label: &'static str,
+    workdir_path_label: &'static str,
+    workdir_current_label: &'static str,
+    workdir_next_label: &'static str,
+    workdir_actions_label: &'static str,
+    workdir_available_status: &'static str,
+    workdir_missing_status: &'static str,
+    workdir_trashed_status: &'static str,
+    workdir_deleted_status: &'static str,
+    workdir_added_prefix: &'static str,
+    workdir_already_exists_prefix: &'static str,
+    workdir_switch_saved_prefix: &'static str,
+    workdir_removed_prefix: &'static str,
+    workdir_moved_to_trash_prefix: &'static str,
+    workdir_permanently_deleted_prefix: &'static str,
+    workdir_operation_failed_prefix: &'static str,
+    workdir_cannot_delete_current: &'static str,
+    workdir_delete_title: &'static str,
+    workdir_delete_prompt_prefix: &'static str,
+    workdir_delete_prompt_suffix: &'static str,
+    move_to_trash: &'static str,
+    permanently_delete: &'static str,
+    yes: &'static str,
     refresh: &'static str,
     add_folder: &'static str,
     generate_selected: &'static str,
@@ -139,6 +171,38 @@ const ZH_CN_TEXT: TextBundle = TextBundle {
     capture_failed_title: "截图失败",
     output_dir_failed_title: "打开保存目录失败",
     history_videos: "历史视频",
+    workdirs_menu: "工作目录...",
+    workdirs_window_title: "工作目录",
+    current_workdir_label: "当前使用",
+    next_workdir_label: "下次启动使用",
+    add_workdir: "新增工作目录",
+    open_workdir: "打开",
+    switch_workdir: "切换",
+    delete_workdir: "删除文件夹",
+    remove_workdir_record: "移出列表",
+    workdir_status_label: "状态",
+    workdir_path_label: "路径",
+    workdir_current_label: "当前",
+    workdir_next_label: "下次",
+    workdir_actions_label: "操作",
+    workdir_available_status: "可用",
+    workdir_missing_status: "缺失",
+    workdir_trashed_status: "已移到回收站",
+    workdir_deleted_status: "已删除",
+    workdir_added_prefix: "已添加工作目录",
+    workdir_already_exists_prefix: "该工作目录已在列表中",
+    workdir_switch_saved_prefix: "已设为下次启动使用",
+    workdir_removed_prefix: "已从列表移除",
+    workdir_moved_to_trash_prefix: "已移到回收站",
+    workdir_permanently_deleted_prefix: "已永久删除",
+    workdir_operation_failed_prefix: "工作目录操作失败",
+    workdir_cannot_delete_current: "不能删除当前正在使用的工作目录或其父目录。",
+    workdir_delete_title: "删除工作目录",
+    workdir_delete_prompt_prefix: "请选择如何处理工作目录：",
+    workdir_delete_prompt_suffix: "文件操作成功后仍会保留历史记录，便于恢复识别。",
+    move_to_trash: "移到回收站",
+    permanently_delete: "永久删除",
+    yes: "是",
     refresh: "刷新",
     add_folder: "添加文件夹",
     generate_selected: "生成选中项",
@@ -226,6 +290,40 @@ const EN_TEXT: TextBundle = TextBundle {
     capture_failed_title: "Screenshot Failed",
     output_dir_failed_title: "Failed to Open Save Folder",
     history_videos: "History Videos",
+    workdirs_menu: "Work Folders...",
+    workdirs_window_title: "Work Folders",
+    current_workdir_label: "Current",
+    next_workdir_label: "Next Launch",
+    add_workdir: "Add Work Folder",
+    open_workdir: "Open",
+    switch_workdir: "Switch",
+    delete_workdir: "Delete Folder",
+    remove_workdir_record: "Remove",
+    workdir_status_label: "Status",
+    workdir_path_label: "Path",
+    workdir_current_label: "Current",
+    workdir_next_label: "Next",
+    workdir_actions_label: "Actions",
+    workdir_available_status: "Available",
+    workdir_missing_status: "Missing",
+    workdir_trashed_status: "Moved to Trash",
+    workdir_deleted_status: "Deleted",
+    workdir_added_prefix: "Added work folder",
+    workdir_already_exists_prefix: "This work folder is already in the list",
+    workdir_switch_saved_prefix: "Will use on next launch",
+    workdir_removed_prefix: "Removed from the list",
+    workdir_moved_to_trash_prefix: "Moved to Trash",
+    workdir_permanently_deleted_prefix: "Permanently deleted",
+    workdir_operation_failed_prefix: "Work folder operation failed",
+    workdir_cannot_delete_current:
+        "Cannot delete the current work folder or one of its parent folders.",
+    workdir_delete_title: "Delete Work Folder",
+    workdir_delete_prompt_prefix: "Choose how to handle this work folder:",
+    workdir_delete_prompt_suffix:
+        "The history record will be kept after file deletion so restored folders can be recognized.",
+    move_to_trash: "Move to Trash",
+    permanently_delete: "Permanently Delete",
+    yes: "Yes",
     refresh: "Refresh",
     add_folder: "Add Folder",
     generate_selected: "Generate Selected",
@@ -450,6 +548,151 @@ impl Text {
 
     pub(crate) fn history_videos(&self) -> &'static str {
         self.bundle.history_videos
+    }
+
+    pub(crate) fn workdirs_menu(&self) -> &'static str {
+        self.bundle.workdirs_menu
+    }
+
+    pub(crate) fn workdirs_window_title(&self) -> &'static str {
+        self.bundle.workdirs_window_title
+    }
+
+    pub(crate) fn current_workdir_label(&self) -> &'static str {
+        self.bundle.current_workdir_label
+    }
+
+    pub(crate) fn next_workdir_label(&self) -> &'static str {
+        self.bundle.next_workdir_label
+    }
+
+    pub(crate) fn add_workdir(&self) -> &'static str {
+        self.bundle.add_workdir
+    }
+
+    pub(crate) fn open_workdir(&self) -> &'static str {
+        self.bundle.open_workdir
+    }
+
+    pub(crate) fn switch_workdir(&self) -> &'static str {
+        self.bundle.switch_workdir
+    }
+
+    pub(crate) fn delete_workdir(&self) -> &'static str {
+        self.bundle.delete_workdir
+    }
+
+    pub(crate) fn remove_workdir_record(&self) -> &'static str {
+        self.bundle.remove_workdir_record
+    }
+
+    pub(crate) fn workdir_status_label(&self) -> &'static str {
+        self.bundle.workdir_status_label
+    }
+
+    pub(crate) fn workdir_path_label(&self) -> &'static str {
+        self.bundle.workdir_path_label
+    }
+
+    pub(crate) fn workdir_current_label(&self) -> &'static str {
+        self.bundle.workdir_current_label
+    }
+
+    pub(crate) fn workdir_next_label(&self) -> &'static str {
+        self.bundle.workdir_next_label
+    }
+
+    pub(crate) fn workdir_actions_label(&self) -> &'static str {
+        self.bundle.workdir_actions_label
+    }
+
+    pub(crate) fn workdir_available_status(&self) -> &'static str {
+        self.bundle.workdir_available_status
+    }
+
+    pub(crate) fn workdir_missing_status(&self) -> &'static str {
+        self.bundle.workdir_missing_status
+    }
+
+    pub(crate) fn workdir_trashed_status(&self) -> &'static str {
+        self.bundle.workdir_trashed_status
+    }
+
+    pub(crate) fn workdir_deleted_status(&self) -> &'static str {
+        self.bundle.workdir_deleted_status
+    }
+
+    pub(crate) fn workdir_added(&self, path: &Path) -> String {
+        format!("{}: {}", self.bundle.workdir_added_prefix, path.display())
+    }
+
+    pub(crate) fn workdir_already_exists(&self, path: &Path) -> String {
+        format!(
+            "{}: {}",
+            self.bundle.workdir_already_exists_prefix,
+            path.display()
+        )
+    }
+
+    pub(crate) fn workdir_switch_saved(&self, path: &Path) -> String {
+        format!(
+            "{}: {}",
+            self.bundle.workdir_switch_saved_prefix,
+            path.display()
+        )
+    }
+
+    pub(crate) fn workdir_removed(&self, path: &Path) -> String {
+        format!("{}: {}", self.bundle.workdir_removed_prefix, path.display())
+    }
+
+    pub(crate) fn workdir_moved_to_trash(&self, path: &Path) -> String {
+        format!(
+            "{}: {}",
+            self.bundle.workdir_moved_to_trash_prefix,
+            path.display()
+        )
+    }
+
+    pub(crate) fn workdir_permanently_deleted(&self, path: &Path) -> String {
+        format!(
+            "{}: {}",
+            self.bundle.workdir_permanently_deleted_prefix,
+            path.display()
+        )
+    }
+
+    pub(crate) fn workdir_operation_failed(&self, error: &dyn std::fmt::Display) -> String {
+        format!("{}: {error}", self.bundle.workdir_operation_failed_prefix)
+    }
+
+    pub(crate) fn workdir_cannot_delete_current(&self) -> String {
+        self.bundle.workdir_cannot_delete_current.to_string()
+    }
+
+    pub(crate) fn workdir_delete_title(&self) -> &'static str {
+        self.bundle.workdir_delete_title
+    }
+
+    pub(crate) fn workdir_delete_prompt(&self, path: &Path) -> String {
+        format!(
+            "{}\n{}\n{}",
+            self.bundle.workdir_delete_prompt_prefix,
+            path.display(),
+            self.bundle.workdir_delete_prompt_suffix
+        )
+    }
+
+    pub(crate) fn move_to_trash(&self) -> &'static str {
+        self.bundle.move_to_trash
+    }
+
+    pub(crate) fn permanently_delete(&self) -> &'static str {
+        self.bundle.permanently_delete
+    }
+
+    pub(crate) fn yes(&self) -> &'static str {
+        self.bundle.yes
     }
 
     pub(crate) fn refresh(&self) -> &'static str {

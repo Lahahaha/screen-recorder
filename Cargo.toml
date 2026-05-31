@@ -14,4 +14,5 @@ dirs = "5"
 winit = "0.30.13"
 eframe = { version = "0.34.3", default-features = false, features = ["glow", "default_fonts"] }
 rfd = "0.17.2"
+trash = "5.2.6"
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }

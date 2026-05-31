@@ -53,6 +53,7 @@ Download the latest version from [Releases](https://github.com/Lahahaha/screen-r
 | 🎬 Generate Today's Video | Generate a video from today's screenshots |
 | History Videos | Open the history video window |
 | 📁 Open Save Folder | Open the folder containing screenshots, videos, and config |
+| Work Folders... | Manage historical work folders, add, switch, open, or delete folders |
 | 🌐 Language | Switch between Chinese and English |
 | ❌ Quit | Save config and quit the app |
 
@@ -74,6 +75,16 @@ You can also open it from the command line:
 screen-recorder --history
 ```
 
+### Work Folders Window
+
+The work folders window manages the root folder that contains screenshots, videos, config, and logs.
+
+- You can add an existing folder or an empty folder. Existing `config.json`, `screenshots`, and `videos` are reused without overwriting config.
+- Added folders are deduplicated by normalized absolute path. Existing entries show a message instead of adding duplicates.
+- Switching a folder saves it for the next app launch. The current session keeps writing screenshots, videos, logs, and config to the current folder.
+- Delete offers Move to Trash, Permanently Delete, or Cancel. The history record is kept after deletion, so restoring the folder to the original path makes it available again.
+- Remove only deletes the history record, not files on disk. The current folder and next-launch folder cannot be removed from the list.
+
 ## Storage Location
 
 The app prefers the system video directory by default:
@@ -84,6 +95,8 @@ The app prefers the system video directory by default:
 | Windows | `C:\Users\<username>\Videos\ScreenRecorder\` |
 
 If the system video directory is unavailable, the app falls back to the documents directory and then the home directory.
+
+The selected work folder is stored in a `workdirs.json` pointer file under the system config directory, not inside the switchable work folder. Each work folder still uses this structure:
 
 ```text
 ScreenRecorder/

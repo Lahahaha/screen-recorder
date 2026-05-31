@@ -14,8 +14,11 @@ const APP_AUTHOR: &str = "Lahahaha";
 const APP_LICENSE: &str = "MIT License";
 const APP_COPYRIGHT: &str = "Copyright (c) 2026 Lahahaha";
 
-pub(crate) fn run() -> AppResult<()> {
-    let paths = AppPaths::new()?;
+pub(crate) fn run(workdir: Option<PathBuf>) -> AppResult<()> {
+    let paths = match workdir {
+        Some(root) => AppPaths::from_root(root)?,
+        None => AppPaths::new()?,
+    };
     let logger = Logger::new(&paths)?;
     let config = load_config(&paths, &logger)?;
     let text = Text::new(config.language);

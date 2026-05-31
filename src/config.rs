@@ -337,6 +337,7 @@ mod tests {
             Local::now().format("%Y%m%d%H%M%S%.3f")
         ));
         let paths = AppPaths {
+            control: root.join("control"),
             config: root.join("config.json"),
             screenshots: root.join("screenshots"),
             videos: root.join("videos"),

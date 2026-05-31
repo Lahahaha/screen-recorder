@@ -10,6 +10,18 @@ use std::{
     thread,
 };
 
+type BOOL = i32;
+type DWORD = u32;
+type HDESK = isize;
+
+const DESKTOP_SWITCHDESKTOP: DWORD = 0x0100;
+
+#[link(name = "user32")]
+extern "system" {
+    fn CloseDesktop(hdesktop: HDESK) -> BOOL;
+    fn OpenInputDesktop(dw_flags: DWORD, inherit: BOOL, desired_access: DWORD) -> HDESK;
+}
+
 pub(crate) fn replace_file(source: &Path, destination: &Path) -> AppResult<()> {
     if !destination.exists() {
         rename_with_context(source, destination, "替换文件失败")?;
@@ -86,6 +98,20 @@ pub(crate) fn open_path(path: &Path) -> AppResult<()> {
     hide_console(&mut cmd);
     cmd.spawn()?;
     Ok(())
+}
+
+pub(crate) fn screen_locked() -> AppResult<bool> {
+    let desktop = unsafe { OpenInputDesktop(0, 0, DESKTOP_SWITCHDESKTOP) };
+    if desktop == 0 {
+        return Ok(true);
+    }
+
+    let closed = unsafe { CloseDesktop(desktop) };
+    if closed == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+
+    Ok(false)
 }
 
 pub(crate) fn hide_console(cmd: &mut Command) {

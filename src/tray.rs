@@ -30,6 +30,7 @@ pub(crate) struct TrayControls {
     generate_video: MenuItem,
     history_videos: MenuItem,
     open_output_dir: MenuItem,
+    workdirs: MenuItem,
     language_menu: Submenu,
     language_items: Vec<(Language, CheckMenuItem)>,
     about: MenuItem,
@@ -53,6 +54,7 @@ pub(crate) enum AppCommand {
     GenerateTodayVideo,
     OpenHistoryVideos,
     OpenOutputDir,
+    OpenWorkdirs,
     OpenAbout,
     Quit,
 }
@@ -68,6 +70,7 @@ struct TrayCommandIds {
     generate_video: MenuId,
     history_videos: MenuId,
     open_output_dir: MenuId,
+    workdirs: MenuId,
     language_items: Vec<(Language, MenuId)>,
     about: MenuId,
     quit: MenuId,
@@ -139,6 +142,7 @@ fn build_menu(
     let generate_video = MenuItem::new(text.generate_today_video(), true, None);
     let history_videos = MenuItem::new(text.history_videos(), true, None);
     let open_output_dir = MenuItem::new(text.open_output_dir(), true, None);
+    let workdirs = MenuItem::new(text.workdirs_menu(), true, None);
     let language_menu = Submenu::new(text.language_menu(), true);
     let about = MenuItem::new(text.about(), true, None);
     let quit = MenuItem::new(text.quit(), true, None);
@@ -215,6 +219,7 @@ fn build_menu(
         &generate_video,
         &history_videos,
         &open_output_dir,
+        &workdirs,
         &language_menu,
         &PredefinedMenuItem::separator(),
         &about,
@@ -238,6 +243,7 @@ fn build_menu(
         generate_video: generate_video.id().clone(),
         history_videos: history_videos.id().clone(),
         open_output_dir: open_output_dir.id().clone(),
+        workdirs: workdirs.id().clone(),
         language_items: language_items
             .iter()
             .map(|(language, item)| (*language, item.id().clone()))
@@ -260,6 +266,7 @@ fn build_menu(
         generate_video,
         history_videos,
         open_output_dir,
+        workdirs,
         language_menu,
         language_items,
         about,
@@ -321,6 +328,10 @@ fn command_for_menu_id(id: &MenuId, command_ids: &TrayCommandIds) -> Option<AppC
         return Some(AppCommand::OpenOutputDir);
     }
 
+    if id == &command_ids.workdirs {
+        return Some(AppCommand::OpenWorkdirs);
+    }
+
     if id == &command_ids.about {
         return Some(AppCommand::OpenAbout);
     }
@@ -349,6 +360,7 @@ pub(crate) fn update_menu_labels(
         .set_text(text.generate_today_video());
     controls.history_videos.set_text(text.history_videos());
     controls.open_output_dir.set_text(text.open_output_dir());
+    controls.workdirs.set_text(text.workdirs_menu());
     controls.language_menu.set_text(text.language_menu());
     for (value, item) in &controls.language_items {
         item.set_checked(*value == language);
@@ -536,6 +548,7 @@ mod tests {
             generate_video: MenuId::new("generate-video"),
             history_videos: MenuId::new("history-videos"),
             open_output_dir: MenuId::new("open-output-dir"),
+            workdirs: MenuId::new("workdirs"),
             language_items: vec![
                 (Language::ZhCn, MenuId::new("language-zh-cn")),
                 (Language::En, MenuId::new("language-en")),
@@ -592,6 +605,16 @@ mod tests {
         assert_eq!(
             command_for_menu_id(&MenuId::new("about"), &command_ids),
             Some(AppCommand::OpenAbout)
+        );
+    }
+
+    #[test]
+    fn command_for_event_detects_workdirs() {
+        let command_ids = test_command_ids();
+
+        assert_eq!(
+            command_for_menu_id(&MenuId::new("workdirs"), &command_ids),
+            Some(AppCommand::OpenWorkdirs)
         );
     }
 

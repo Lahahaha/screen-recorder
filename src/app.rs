@@ -306,7 +306,7 @@ fn handle_app_command(
             state.logger.clone(),
         ),
         AppCommand::OpenHistoryVideos => {
-            if let Err(error) = open_history_window() {
+            if let Err(error) = open_history_window(&state.paths) {
                 state.logger.error(format!("打开历史视频窗口失败: {error}"));
                 let text = Text::new(current_language(&state.config, &state.logger));
                 platform::notify(
@@ -317,7 +317,7 @@ fn handle_app_command(
             }
         }
         AppCommand::OpenAbout => {
-            if let Err(error) = open_about_window() {
+            if let Err(error) = open_about_window(&state.paths) {
                 state.logger.error(format!("打开关于窗口失败: {error}"));
                 let text = Text::new(current_language(&state.config, &state.logger));
                 platform::notify(
@@ -325,6 +325,14 @@ fn handle_app_command(
                     &format!("{error}"),
                     state.logger.clone(),
                 );
+            }
+        }
+        AppCommand::OpenWorkdirs => {
+            if let Err(error) = open_workdirs_window(&state.paths) {
+                state.logger.error(format!("打开工作目录窗口失败: {error}"));
+                let text = Text::new(current_language(&state.config, &state.logger));
+                let title = text.workdir_operation_failed(&error);
+                platform::notify(&title, &format!("{error}"), state.logger.clone());
             }
         }
         AppCommand::OpenOutputDir => {
@@ -347,19 +355,31 @@ fn handle_app_command(
     }
 }
 
-fn open_history_window() -> AppResult<()> {
+fn open_history_window(paths: &AppPaths) -> AppResult<()> {
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command.arg("--history");
+    command.arg("--workdir").arg(&paths.root);
     platform::hide_console(&mut command);
     command.spawn()?;
     Ok(())
 }
 
-fn open_about_window() -> AppResult<()> {
+fn open_about_window(paths: &AppPaths) -> AppResult<()> {
     let executable = std::env::current_exe()?;
     let mut command = Command::new(executable);
     command.arg("--about");
+    command.arg("--workdir").arg(&paths.root);
+    platform::hide_console(&mut command);
+    command.spawn()?;
+    Ok(())
+}
+
+fn open_workdirs_window(paths: &AppPaths) -> AppResult<()> {
+    let executable = std::env::current_exe()?;
+    let mut command = Command::new(executable);
+    command.arg("--workdirs");
+    command.arg("--workdir").arg(&paths.root);
     platform::hide_console(&mut command);
     command.spawn()?;
     Ok(())
@@ -594,52 +614,97 @@ fn run_capture_loop(
             logger.error(format!("读取配置失败: {error}"));
             Config::default().interval
         });
+    let mut lock_state_error_reported = false;
 
     while !shutdown.load(Ordering::SeqCst) {
-        if running.load(Ordering::SeqCst) {
-            let now = Instant::now();
-            match cloned_config(&config) {
-                Ok(config) => {
-                    let interval = config.interval;
-                    if interval != last_interval {
-                        last_interval = interval;
-                        next_capture = now + Duration::from_secs(interval);
-                    }
-
-                    if now >= next_capture {
-                        match capture_session.capture_once(&paths, &config, &logger) {
-                            Ok(report) => {
-                                let _ = app_events.send(AppEvent::CaptureSucceeded {
-                                    report,
-                                    notify: false,
-                                });
-                            }
-                            Err(error) => {
-                                logger.error(format!("定时截屏失败: {error}"));
-                                let _ = app_events.send(AppEvent::CaptureFailed {
-                                    message: error.to_string(),
-                                    notify: false,
-                                });
-                            }
+        let user_running = running.load(Ordering::SeqCst);
+        let now = Instant::now();
+        match cloned_config(&config) {
+            Ok(config) => {
+                let screen_locked = if user_running {
+                    match platform::screen_locked() {
+                        Ok(screen_locked) => {
+                            lock_state_error_reported = false;
+                            screen_locked
                         }
-                        next_capture = now + Duration::from_secs(interval);
+                        Err(error) => {
+                            if !lock_state_error_reported {
+                                logger.warn(format!("读取锁屏状态失败，按未锁屏处理: {error}"));
+                                lock_state_error_reported = true;
+                            }
+                            false
+                        }
+                    }
+                } else {
+                    false
+                };
+
+                if capture_loop_should_capture(
+                    user_running,
+                    screen_locked,
+                    config.interval,
+                    now,
+                    &mut next_capture,
+                    &mut last_interval,
+                ) {
+                    match capture_session.capture_once(&paths, &config, &logger) {
+                        Ok(report) => {
+                            let _ = app_events.send(AppEvent::CaptureSucceeded {
+                                report,
+                                notify: false,
+                            });
+                        }
+                        Err(error) => {
+                            logger.error(format!("定时截屏失败: {error}"));
+                            let _ = app_events.send(AppEvent::CaptureFailed {
+                                message: error.to_string(),
+                                notify: false,
+                            });
+                        }
                     }
                 }
-                Err(error) => {
+            }
+            Err(error) => {
+                if user_running {
                     logger.error(format!("读取配置失败: {error}"));
                     last_interval = Config::default().interval;
                     next_capture = now + Duration::from_secs(last_interval);
+                } else {
+                    next_capture = now;
                 }
-            }
-        } else {
-            next_capture = Instant::now();
-            if let Ok(config) = cloned_config(&config) {
-                last_interval = config.interval;
             }
         }
 
         thread::sleep(Duration::from_secs(1));
     }
+}
+
+fn capture_loop_should_capture(
+    user_running: bool,
+    screen_locked: bool,
+    interval: u64,
+    now: Instant,
+    next_capture: &mut Instant,
+    last_interval: &mut u64,
+) -> bool {
+    if !user_running || screen_locked {
+        *last_interval = interval;
+        *next_capture = now;
+        return false;
+    }
+
+    if interval != *last_interval {
+        *last_interval = interval;
+        *next_capture = now + Duration::from_secs(interval);
+        return false;
+    }
+
+    if now < *next_capture {
+        return false;
+    }
+
+    *next_capture = now + Duration::from_secs(interval);
+    true
 }
 
 fn report_thread_panic(
@@ -850,6 +915,7 @@ mod tests {
 
     fn test_logger(root: &Path) -> Logger {
         let paths = AppPaths {
+            control: root.join("control"),
             root: root.to_path_buf(),
             config: root.join("config.json"),
             screenshots: root.join("screenshots"),
@@ -920,5 +986,77 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(config.capture_mode, CaptureMode::Screen(2));
+    }
+
+    #[test]
+    fn timed_capture_skips_when_running_but_screen_locked() {
+        let now = Instant::now();
+        let mut next_capture = now - Duration::from_secs(1);
+        let mut last_interval = 30;
+
+        let should_capture =
+            capture_loop_should_capture(true, true, 30, now, &mut next_capture, &mut last_interval);
+
+        assert!(!should_capture);
+        assert_eq!(next_capture, now);
+        assert_eq!(last_interval, 30);
+    }
+
+    #[test]
+    fn timed_capture_resumes_after_unlock_when_user_was_running() {
+        let locked_at = Instant::now();
+        let unlocked_at = locked_at + Duration::from_secs(1);
+        let mut next_capture = locked_at - Duration::from_secs(1);
+        let mut last_interval = 30;
+
+        assert!(!capture_loop_should_capture(
+            true,
+            true,
+            30,
+            locked_at,
+            &mut next_capture,
+            &mut last_interval,
+        ));
+
+        let should_capture = capture_loop_should_capture(
+            true,
+            false,
+            30,
+            unlocked_at,
+            &mut next_capture,
+            &mut last_interval,
+        );
+
+        assert!(should_capture);
+        assert_eq!(next_capture, unlocked_at + Duration::from_secs(30));
+    }
+
+    #[test]
+    fn timed_capture_does_not_start_after_unlock_when_user_was_paused() {
+        let locked_at = Instant::now();
+        let unlocked_at = locked_at + Duration::from_secs(1);
+        let mut next_capture = locked_at - Duration::from_secs(1);
+        let mut last_interval = 30;
+
+        assert!(!capture_loop_should_capture(
+            false,
+            true,
+            30,
+            locked_at,
+            &mut next_capture,
+            &mut last_interval,
+        ));
+
+        let should_capture = capture_loop_should_capture(
+            false,
+            false,
+            30,
+            unlocked_at,
+            &mut next_capture,
+            &mut last_interval,
+        );
+
+        assert!(!should_capture);
+        assert_eq!(next_capture, unlocked_at);
     }
 }

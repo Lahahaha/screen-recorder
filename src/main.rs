@@ -17,9 +17,11 @@ mod single_instance;
 mod temp;
 mod tray;
 mod video;
+mod workdirs;
 
 fn main() -> app::AppResult<()> {
     let args = std::env::args().collect::<Vec<_>>();
+    let workdir = arg_value(&args, "--workdir").map(std::path::PathBuf::from);
     if let Some(index) = args.iter().position(|arg| arg == "--profile-video-dir") {
         let input = args.get(index + 1).ok_or_else(|| {
             std::io::Error::new(
@@ -39,10 +41,20 @@ fn main() -> app::AppResult<()> {
     }
 
     if args.iter().any(|arg| arg == "--history") {
-        return history::run();
+        return history::run(workdir);
     }
     if args.iter().any(|arg| arg == "--about") {
-        return about::run();
+        return about::run(workdir);
+    }
+    if args.iter().any(|arg| arg == "--workdirs") {
+        return workdirs::run(workdir);
     }
     app::run()
+}
+
+fn arg_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
 }
